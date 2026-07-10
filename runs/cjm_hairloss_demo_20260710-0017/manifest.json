@@ -1,0 +1,119 @@
+{
+  "cjm_spec_version": "1.1",
+  "study_name": "cjm_hairloss_demo",
+  "study_path": "studies/cjm_hairloss_demo.yaml",
+  "study_type": "segment_map",
+  "category": "средства от выпадения волос",
+  "brand": "ДемоБренд (вымышленный)",
+  "vertical": "pharma_otc",
+  "runs_for_stability": 3,
+  "segments_target_range": [
+    5,
+    12
+  ],
+  "data_inputs": {
+    "drug_instruction": null,
+    "social_listening": null,
+    "category_data": null
+  },
+  "rtb_candidates_per_segment": 4,
+  "test_segments": 2,
+  "pharma_gate": {
+    "required": true,
+    "rx_warning_required": false
+  },
+  "environment": {
+    "python_version": "3.13.11",
+    "platform": "macOS-26.5.1-arm64-arm-64bit-Mach-O"
+  },
+  "config_snapshot": {
+    "llm": {
+      "provider": "agent",
+      "model": "claude-sonnet-5",
+      "temperature": 0.85,
+      "samples_per_respondent": 2
+    },
+    "embedding": {
+      "model": "paraphrase-multilingual-MiniLM-L12-v2",
+      "prefix": "",
+      "device": "cpu"
+    },
+    "ssr": {
+      "epsilon": 0.001,
+      "pmf_temperature": 1.0,
+      "min_anchor_sets": 4
+    },
+    "report": {
+      "bootstrap_iters": 1000,
+      "seed": 42,
+      "ci": 0.95
+    }
+  },
+  "created_at": "2026-07-09T21:17:41.667443+00:00",
+  "stages": {
+    "pharma_gate": {
+      "instruction_source_status": "обобщённая_демо",
+      "trust": "🔴",
+      "rx_warning_included": false,
+      "excluded_segments_count": 3,
+      "completed_at": "2026-07-09T21:18:45.553677+00:00"
+    },
+    "segmentation": {
+      "independence": "approximated",
+      "runs_for_stability": 3,
+      "core_segments": 8,
+      "unstable_segments": 2,
+      "note": "Прогоны 1-3 выполнены последовательно в одном контексте (демо/пилот); полная изоляция (отдельные субагенты) не проводилась.",
+      "completed_at": "2026-07-09T21:27:41.986659+00:00"
+    },
+    "cjm": {
+      "segments_covered": [
+        "molodye_mamy_posle_rodov",
+        "muzhchiny_rannee_poredenie"
+      ],
+      "note": "CJM построен для 2 устойчивых (3/3) сегментов ядра, согласно DoD §5.2 пилота (test_segments=2 в cjm_hairloss_demo.yaml).",
+      "completed_at": "2026-07-09T21:33:02.007055+00:00"
+    },
+    "data_merge": {
+      "data_inputs_present": false,
+      "note": "data_inputs пустые (studies/cjm_hairloss_demo.yaml) — все количественные места остаются 🔴 «нет данных — оценка», ничего не подставлено правдоподобно.",
+      "completed_at": "2026-07-09T21:34:00.047408+00:00"
+    },
+    "rtb_study_generated": {
+      "rtb_candidates_path": "/Users/romankobozev/Documents/Claude/Projects/Синтетические ИИ-панели/synthetic-panel/runs/cjm_hairloss_demo_20260710-0017/04_rtb_candidates.yaml",
+      "shape": "shared",
+      "studies": [
+        "/Users/romankobozev/Documents/Claude/Projects/Синтетические ИИ-панели/synthetic-panel/studies/cjm_hairloss_demo_rtb.yaml"
+      ],
+      "segments_exported": [
+        "/Users/romankobozev/Documents/Claude/Projects/Синтетические ИИ-панели/synthetic-panel/panel/segments/hairloss_demo/molodye_mamy_posle_rodov.yaml",
+        "/Users/romankobozev/Documents/Claude/Projects/Синтетические ИИ-панели/synthetic-panel/panel/segments/hairloss_demo/zhenshchiny_menopauza.yaml",
+        "/Users/romankobozev/Documents/Claude/Projects/Синтетические ИИ-панели/synthetic-panel/panel/segments/hairloss_demo/muzhchiny_rannee_poredenie.yaml",
+        "/Users/romankobozev/Documents/Claude/Projects/Синтетические ИИ-панели/synthetic-panel/panel/segments/hairloss_demo/khronicheskiy_stress.yaml",
+        "/Users/romankobozev/Documents/Claude/Projects/Синтетические ИИ-панели/synthetic-panel/panel/segments/hairloss_demo/naturalniki_bez_khimii.yaml",
+        "/Users/romankobozev/Documents/Claude/Projects/Синтетические ИИ-панели/synthetic-panel/panel/segments/hairloss_demo/razocharovannye_veterany.yaml",
+        "/Users/romankobozev/Documents/Claude/Projects/Синтетические ИИ-панели/synthetic-panel/panel/segments/hairloss_demo/povrezhdenie_posle_protsedur.yaml",
+        "/Users/romankobozev/Documents/Claude/Projects/Синтетические ИИ-панели/synthetic-panel/panel/segments/hairloss_demo/ekonomnye_otlozhennoe_reshenie.yaml"
+      ],
+      "completed_at": "2026-07-09T21:35:40.819750+00:00"
+    },
+    "rtb_test": {
+      "rtb_study_run_dir": "runs/cjm_hairloss_demo_rtb_20260710-0035",
+      "segments_tested": [
+        "molodye_mamy_posle_rodov",
+        "muzhchiny_rannee_poredenie"
+      ],
+      "rtb_candidates": 4,
+      "respondents_per_segment": 10,
+      "samples_per_respondent": 2,
+      "total_responses": 160,
+      "completed_at": "2026-07-09T21:43:51.217462+00:00"
+    },
+    "report": {
+      "report_path": "runs/cjm_hairloss_demo_20260710-0017/cjm_report.md",
+      "lint_status": "exit 0",
+      "lint_fix_applied": "scripts/cjm_lint.py: added DISCLAIMER_BLOCK_CJM_START/END to DISCLAIMER_BLOCK_MARKERS (see module docstring note).",
+      "completed_at": "2026-07-09T21:51:42.946192+00:00"
+    }
+  }
+}

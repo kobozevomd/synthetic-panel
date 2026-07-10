@@ -1,0 +1,82 @@
+{
+  "study_name": "cjm_hairloss_demo_rtb",
+  "study_path": "studies/cjm_hairloss_demo_rtb.yaml",
+  "study_type": "claims_ranking",
+  "question_scale": "purchase_intent",
+  "segments": [
+    "molodye_mamy_posle_rodov",
+    "muzhchiny_rannee_poredenie"
+  ],
+  "stimuli": [
+    {
+      "id": "rtb1",
+      "text": "Если переживаете, что активный уход может быть слишком агрессивным именно сейчас, ДемоБренд предлагает бережную поддержку волос благодаря формуле с растительными экстрактами, которая укрепляет волосяные фолликулы, не перегружая их синтетическими компонентами."
+    },
+    {
+      "id": "rtb2",
+      "text": "Если вы уже разочаровались в громких обещаниях «заново за месяц», ДемоБренд не обещает чуда — он поддерживает волосы благодаря составу, который работает на укрепление структуры волоса изнутри, и честно говорит о постепенном, а не мгновенном результате."
+    },
+    {
+      "id": "rtb3",
+      "text": "Если не хочется превращать уход за волосами в отдельный сложный ритуал или разговор с кем-либо, ДемоБренд — это одно простое действие внутри привычного ухода, разработанное с учётом рекомендаций специалистов по уходу за волосами, без лишних шагов и лишнего внимания к теме."
+    },
+    {
+      "id": "rtb4",
+      "text": "Если для вас важно понимать, что именно вы наносите на кожу головы, состав ДемоБренд полностью прозрачен и построен на растительных активных компонентах, действие каждого из которых объяснено просто, без сложных терминов и голых обещаний."
+    }
+  ],
+  "respondents_per_segment": 10,
+  "samples_per_respondent": 2,
+  "config_snapshot": {
+    "llm": {
+      "provider": "agent",
+      "model": "claude-sonnet-5",
+      "temperature": 0.85,
+      "samples_per_respondent": 2
+    },
+    "embedding": {
+      "model": "paraphrase-multilingual-MiniLM-L12-v2",
+      "prefix": "",
+      "device": "cpu"
+    },
+    "ssr": {
+      "epsilon": 0.001,
+      "pmf_temperature": 1.0,
+      "min_anchor_sets": 4
+    },
+    "report": {
+      "bootstrap_iters": 1000,
+      "seed": 42,
+      "ci": 0.95
+    }
+  },
+  "created_at": "2026-07-09T21:35:49.191634+00:00",
+  "stages": {
+    "generate": {
+      "provider": "agent",
+      "status": "todo",
+      "n_tasks": 160,
+      "temperature_control": false,
+      "model": null,
+      "temperature": null,
+      "completed_at": "2026-07-09T21:35:49.192738+00:00"
+    },
+    "score": {
+      "embedding_model": "paraphrase-multilingual-MiniLM-L12-v2",
+      "embedding_device": "cpu",
+      "embedding_prefix": "",
+      "epsilon": 0.001,
+      "pmf_temperature": 1.0,
+      "min_anchor_sets": 4,
+      "n_responses_scored": 160,
+      "bootstrap_iters": 1000,
+      "bootstrap_seed": 42,
+      "ci": 0.95,
+      "completed_at": "2026-07-09T21:42:15.390719+00:00"
+    },
+    "report": {
+      "report_path": "/Users/romankobozev/Documents/Claude/Projects/Синтетические ИИ-панели/synthetic-panel/runs/cjm_hairloss_demo_rtb_20260710-0035/report.md",
+      "completed_at": "2026-07-09T21:42:22.437000+00:00"
+    }
+  }
+}

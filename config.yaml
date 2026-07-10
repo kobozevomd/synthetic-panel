@@ -1,0 +1,26 @@
+# config.yaml — дефолтная конфигурация synthetic-panel (spec_synthetic-panel_v1.md §3).
+# Правки внутри исследования (per-study override) — только через поля самого
+# study.yaml (question_scale/respondents_per_segment/samples_per_respondent);
+# этот файл — дефолты уровня скилла, один на все прогоны.
+
+llm:
+  provider: agent            # agent | anthropic | openai | gigachat
+  model: claude-sonnet-5     # для api-провайдеров (anthropic/openai/gigachat); agent игнорирует
+  temperature: 0.85          # только api-режимы — agent-режим не контролирует temperature (см. §5)
+  samples_per_respondent: 2  # дефолт, если не задано в study.yaml
+
+embedding:
+  model: paraphrase-multilingual-MiniLM-L12-v2   # быстрый дефолт для демо (см. §3)
+  # прод-рекомендация: intfloat/multilingual-e5-large-instruct (+prefix "query: ")
+  prefix: ""                 # для e5-семейства: "query: "
+  device: cpu
+
+ssr:
+  epsilon: 0.001
+  pmf_temperature: 1.0
+  min_anchor_sets: 4
+
+report:
+  bootstrap_iters: 1000
+  seed: 42
+  ci: 0.95

@@ -1,0 +1,569 @@
+#!/usr/bin/env python3
+"""
+test_cjm_lint.py — юнит-тесты линтера честности (scripts/cjm_lint.py), spec_synthetic-panel_v1.1_segment_map.md §4.
+
+Запуск:
+    python scripts/test_cjm_lint.py
+    (или: python -m unittest scripts.test_cjm_lint -v из корня скилла)
+
+Покрытие (см. spec §4 и §5.1 "Юнит: cjm_lint.py ловит подсаженные нарушения..."):
+    - чистый образец (все 4 правила выполнены) -> lint_text даёт [];
+    - по фикстуре на каждый ТИП нарушения (правила 1-4, включая обе под-проверки
+      правила 3: отсутствие легенды и отсутствие маркера в разделе) -> нарушение
+      подсаженного типа ловится, позитивные соседние строки не ловятся ложно;
+    - многофайловая оркестрация (lint_files): легенда в одном файле "закрывает"
+      требование для всего набора, посекционные маркеры проверяются на КАЖДЫЙ
+      файл отдельно;
+    - CLI end-to-end (subprocess): exit 0 на чистом образце, exit 1 на грязном.
+    - самотест на references/cjm_report_template.md, если он уже существует
+      (self-skip, если сборщик [B1] ещё не создал файл — не блокирует прогон).
+"""
+
+from __future__ import annotations
+
+import subprocess
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+_SCRIPTS_DIR = Path(__file__).resolve().parent
+if str(_SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS_DIR))
+
+import cjm_lint  # noqa: E402
+
+CJM_LINT_PATH = _SCRIPTS_DIR / "cjm_lint.py"
+
+
+# ----------------------------------------------------------------------------
+# Фикстуры
+# ----------------------------------------------------------------------------
+
+CLEAN_REPORT = """\
+# Отчёт AI CJM: демо (cjm_hairloss_demo)
+
+## Легенда карты доверия 🟢🟡🔴
+
+- 🟢 модельное качественное — мотивации, барьеры, язык, JTBD.
+- 🟡 гипотеза для проверки — RTB-кандидаты, неосознанные потребности, карта тачпоинтов.
+- 🔴 требует данных — доли и проценты без независимого измерения.
+
+## Сегмент 1: Молодые мамы после родов 🟢 (3/3)
+
+Главная мотивация — вернуть волосам густоту до рождения ребёнка.
+
+Доля упоминаний темы в обсуждениях: 34% [BA].
+
+Оценка: значительная часть сегмента впервые сталкивается с выпадением через
+2-3 месяца после родов (оценка, отдельного измерения по срокам нет).
+
+Синтетическая иллюстрация (сгенерировано моделью, не отзыв из источника):
+«кажется, что волосы высыпаются клочьями».
+
+Реальный отзыв [отзывы: data/social_listening_2026.csv]: «уже полгода мажу всё
+подряд, толку ноль».
+
+## RTB-кандидаты для сегмента 1 🟡
+
+Гипотеза для проверки: клиническая доказанность молекулы поддержана данными
+исследования (18% участников [клиент]).
+
+## Раздел данных 🔴
+
+Доля пациентов, дошедших до постановки диагноза: нет данных — оценка.
+
+## Точность метода 🟢
+
+Метод SSR: R=0,72 (~90% теоретического потолка).
+"""
+
+
+def _write(tmp_dir: Path, name: str, content: str) -> Path:
+    path = tmp_dir / name
+    path.write_text(content, encoding="utf-8")
+    return path
+
+
+# ----------------------------------------------------------------------------
+# Чистый образец
+# ----------------------------------------------------------------------------
+
+
+class TestCleanSample(unittest.TestCase):
+    def test_clean_report_has_no_violations(self):
+        violations = cjm_lint.lint_text(CLEAN_REPORT)
+        self.assertEqual(violations, [], f"Чистый образец не должен давать нарушений, получено: {violations}")
+
+
+# ----------------------------------------------------------------------------
+# Правило 1: проценты без источника
+# ----------------------------------------------------------------------------
+
+
+class TestRule1PercentSourcing(unittest.TestCase):
+    def test_percent_without_source_is_flagged(self):
+        text = "# Отчёт\n## Раздел 🟢\nДоля сегмента: 42% в обсуждениях категории.\n"
+        violations = cjm_lint.lint_text(text)
+        rule1 = [v for v in violations if v.rule == 1]
+        self.assertEqual(len(rule1), 1)
+        self.assertEqual(rule1[0].line, 3)
+
+    def test_percent_with_source_tag_passes(self):
+        text = "# Отчёт\n## Раздел 🟢\nДоля сегмента: 42% [BA].\n"
+        violations = cjm_lint.lint_text(text)
+        self.assertEqual([v for v in violations if v.rule == 1], [])
+
+    def test_percent_with_estimate_word_passes(self):
+        text = "# Отчёт\n## Раздел 🟢\nОценка: примерно 42% сегмента сталкивается с этим впервые.\n"
+        violations = cjm_lint.lint_text(text)
+        self.assertEqual([v for v in violations if v.rule == 1], [])
+
+    def test_percent_with_hypothesis_word_passes(self):
+        text = "# Отчёт\n## Раздел 🟡\nГипотеза: около 20% готовы попробовать новинку.\n"
+        violations = cjm_lint.lint_text(text)
+        self.assertEqual([v for v in violations if v.rule == 1], [])
+
+    def test_all_six_source_tags_are_accepted(self):
+        for tag in ("[BA]", "[Mediascope]", "[DSM]", "[Росстат]", "[опрос]", "[клиент]"):
+            text = f"# Отчёт\n## Раздел 🟢\nПоказатель: 10% {tag}.\n"
+            violations = cjm_lint.lint_text(text)
+            self.assertEqual([v for v in violations if v.rule == 1], [], f"тег {tag} должен приниматься")
+
+    def test_percent_without_space_is_also_matched(self):
+        text = "# Отчёт\n## Раздел 🟢\nПоказатель: 42% без пробела перед процентом.\n"
+        violations = cjm_lint.lint_text(text)
+        self.assertEqual(len([v for v in violations if v.rule == 1]), 1)
+
+
+# ----------------------------------------------------------------------------
+# Находка №4, MAJOR (review_v1.1.md §3.4) — "процент" словом/цифрой без "%"
+# ----------------------------------------------------------------------------
+
+
+class TestRule1PercentWordForm(unittest.TestCase):
+    """PERCENT_RE ловит только цифровую форму со знаком "%"; количественное
+    утверждение без единого символа "%" (числительное словом, голая цифра рядом
+    со словом "процент", разговорная инверсия) должно ловиться так же — см.
+    докстринг cjm_lint.py, PERCENT_WORD_RE."""
+
+    def test_spelled_out_number_word_without_percent_sign_is_flagged(self):
+        text = (
+            "# Отчёт\n## Раздел 🟢\n"
+            "Сорок процентов сегмента предпочитают этот вариант, без каких-либо оговорок.\n"
+        )
+        violations = cjm_lint.lint_text(text)
+        rule1 = [v for v in violations if v.rule == 1]
+        self.assertEqual(len(rule1), 1, f"ожидалось 1 нарушение, получено: {rule1}")
+
+    def test_digit_without_percent_sign_is_flagged(self):
+        text = "# Отчёт\n## Раздел 🟢\nПоказатель: 40 процентов сегмента, без источника и без пометки.\n"
+        violations = cjm_lint.lint_text(text)
+        self.assertEqual(len([v for v in violations if v.rule == 1]), 1)
+
+    def test_reversed_word_order_colloquial_inversion_is_flagged(self):
+        text = "# Отчёт\n## Раздел 🟢\nПроцентов пять сегмента реагируют так же, без указания источника.\n"
+        violations = cjm_lint.lint_text(text)
+        self.assertEqual(len([v for v in violations if v.rule == 1]), 1)
+
+    def test_percent_word_form_with_source_tag_passes(self):
+        text = "# Отчёт\n## Раздел 🟢\nСорок процентов сегмента [BA] предпочитают этот вариант.\n"
+        violations = cjm_lint.lint_text(text)
+        self.assertEqual([v for v in violations if v.rule == 1], [])
+
+    def test_percent_word_form_with_estimate_word_passes(self):
+        text = "# Отчёт\n## Раздел 🟡\nОценка: сорок процентов сегмента предпочитают этот вариант.\n"
+        violations = cjm_lint.lint_text(text)
+        self.assertEqual([v for v in violations if v.rule == 1], [])
+
+    def test_bare_percent_word_without_nearby_numeral_does_not_trigger(self):
+        """Ложное срабатывание, которого явно нужно избежать (спецификация задачи):
+        методологическая проза про "правило процентов" без числительного рядом —
+        не количественное утверждение, не нарушение."""
+        text = (
+            "# Отчёт\n## Раздел 🟢\n"
+            "Напомним правило процентов: любая цифра с «%» требует тега источника "
+            "или пометки «оценка»/«гипотеза».\n"
+        )
+        violations = cjm_lint.lint_text(text)
+        self.assertEqual([v for v in violations if v.rule == 1], [])
+
+    def test_ni_odnogo_procenta_idiom_does_not_trigger(self):
+        """"Ни одного процента" — утверждение ОТСУТСТВИЯ процента (дословно из
+        чек-листа runs/cjm_hairloss_demo_20260710-0017/01_segmentation_run{1,2,3}.md),
+        не количественная доля — "одного" технически числительное, но идиома
+        самопроверки не должна ловиться как нарушение."""
+        text = (
+            "# Отчёт\n## Раздел 🟢\n"
+            "Ни одного процента, ни одного коэффициента значимости в тексте выше.\n"
+        )
+        violations = cjm_lint.lint_text(text)
+        self.assertEqual([v for v in violations if v.rule == 1], [])
+
+
+# ----------------------------------------------------------------------------
+# Находка №1, CRITICAL (review_v1.1.md §3.2) — табличное "отмывание" непомеченных
+# значений: split_into_blocks склеивал ВСЕ строки markdown-таблицы в один блок,
+# так что тег в одном ряду прикрывал непомеченные проценты/цитаты в соседних.
+# ----------------------------------------------------------------------------
+
+
+class TestTableRowLaundering(unittest.TestCase):
+    def test_rule1_table_row_without_tag_is_flagged_even_if_sibling_row_has_tag(self):
+        text = (
+            "# Отчёт\n## Раздел 🟢\n"
+            "| Сегмент | Доля | Источник |\n"
+            "|---|---|---|\n"
+            "| Альфа | 42% | [BA] |\n"
+            "| Бета | 55% | без источника здесь вообще |\n"
+        )
+        violations = cjm_lint.lint_text(text)
+        rule1 = [v for v in violations if v.rule == 1]
+        self.assertEqual(len(rule1), 1, f"ожидалось 1 нарушение (ряд «Бета»), получено: {rule1}")
+        self.assertIn("Бета", rule1[0].excerpt)
+        self.assertNotIn("Альфа", rule1[0].excerpt)
+
+    def test_rule2_table_row_without_tag_is_flagged_even_if_sibling_row_has_tag(self):
+        text = (
+            '# Отчёт\n## Раздел 🟢\n'
+            '| Сегмент | Цитата |\n'
+            '|---|---|\n'
+            '| Альфа | Реальный отзыв [BA]: "работает" |\n'
+            '| Бета | Реальный отзыв: "не работает вообще, зря деньги" |\n'
+        )
+        violations = cjm_lint.lint_text(text)
+        rule2 = [v for v in violations if v.rule == 2]
+        self.assertEqual(len(rule2), 1, f"ожидалось 1 нарушение (ряд «Бета»), получено: {rule2}")
+        self.assertIn("Бета", rule2[0].excerpt)
+
+    def test_rule4_table_row_with_bad_wording_is_flagged_even_if_sibling_row_is_canonical(self):
+        text = (
+            "# Отчёт\n## Раздел 🟢\n"
+            "| Сегмент | Точность |\n"
+            "|---|---|\n"
+            "| Альфа | Точность метода 90% для этого сегмента отдельно |\n"
+            "| Бета | Метод SSR: R=0,72 (~90% теоретического потолка) |\n"
+        )
+        violations = cjm_lint.lint_text(text)
+        rule4 = [v for v in violations if v.rule == 4]
+        self.assertEqual(len(rule4), 1, f"ожидалось 1 нарушение (ряд «Альфа»), получено: {rule4}")
+        self.assertIn("Альфа", rule4[0].excerpt)
+
+    def test_clean_table_with_correct_tag_in_every_row_passes(self):
+        """Регресс: если у КАЖДОГО ряда свой корректный тег — построчная проверка
+        не должна давать ложных срабатываний (не путать с прежним поведением по
+        блоку целиком)."""
+        text = (
+            "# Отчёт\n## Раздел 🟢\n"
+            "| Сегмент | Доля | Источник |\n"
+            "|---|---|---|\n"
+            "| Альфа | 42% | [BA] |\n"
+            "| Бета | 55% | [Mediascope] |\n"
+        )
+        violations = cjm_lint.lint_text(text)
+        self.assertEqual([v for v in violations if v.rule == 1], [])
+
+    def test_blank_line_separated_rows_still_flagged_as_before(self):
+        """Контрольный тест ревью: та же пара строк, что и в первом фикстуре
+        выше, но разделённая пустой строкой (значит — заведомо два блока) —
+        должна была и раньше ловиться корректно; фиксирует, что фикс не завязан
+        на этот конкретный случай, а именно на отсутствие пустой строки между
+        рядами таблицы."""
+        text = (
+            "# Отчёт\n## Раздел 🟢\n"
+            "| Сегмент | Доля | Источник |\n"
+            "|---|---|---|\n"
+            "| Альфа | 42% | [BA] |\n"
+            "\n"
+            "| Бета | 55% | без источника здесь вообще |\n"
+        )
+        violations = cjm_lint.lint_text(text)
+        rule1 = [v for v in violations if v.rule == 1]
+        self.assertEqual(len(rule1), 1)
+
+
+class TestProseWordWrapStillWorksAfterTableFix(unittest.TestCase):
+    """Регресс осознанного фикса B2 (docstring cjm_lint.py) — word-wrap прозы БЕЗ
+    пустой строки между физическими строками по-прежнему должен считаться ОДНИМ
+    блоком; TABLE_ROW_RE — отдельная новая ветка только для строк, начинающихся
+    с "|", не должна была затронуть эту логику."""
+
+    def test_percent_and_estimate_word_wrapped_onto_next_line_still_pass(self):
+        text = (
+            "# Отчёт\n## Раздел 🟢\n"
+            "Доля сегмента составляет примерно 42% — это предварительная\n"
+            "оценка, не измерение, окончательных данных пока нет.\n"
+        )
+        violations = cjm_lint.lint_text(text)
+        self.assertEqual([v for v in violations if v.rule == 1], [])
+
+
+# ----------------------------------------------------------------------------
+# Правило 2: "реальный отзыв"/"реальная цитата" без источника
+# ----------------------------------------------------------------------------
+
+
+class TestRule2RealQuoteSourcing(unittest.TestCase):
+    def test_real_quote_without_source_is_flagged(self):
+        text = '# Отчёт\n## Раздел 🟢\nРеальный отзыв: "это работает у меня отлично".\n'
+        violations = cjm_lint.lint_text(text)
+        rule2 = [v for v in violations if v.rule == 2]
+        self.assertEqual(len(rule2), 1)
+        self.assertEqual(rule2[0].line, 3)
+
+    def test_real_review_plural_without_source_is_flagged(self):
+        text = "# Отчёт\n## Раздел 🟢\nВ основе анализа — реальные отзывы пользователей.\n"
+        violations = cjm_lint.lint_text(text)
+        self.assertEqual(len([v for v in violations if v.rule == 2]), 1)
+
+    def test_real_quote_with_ba_tag_passes(self):
+        text = '# Отчёт\n## Раздел 🟢\nРеальный отзыв [BA]: "это работает у меня отлично".\n'
+        violations = cjm_lint.lint_text(text)
+        self.assertEqual([v for v in violations if v.rule == 2], [])
+
+    def test_real_quote_with_otzyvy_tag_passes(self):
+        text = (
+            '# Отчёт\n## Раздел 🟢\nРеальный отзыв [отзывы: data/social_listening.csv]: '
+            '"это работает у меня отлично".\n'
+        )
+        violations = cjm_lint.lint_text(text)
+        self.assertEqual([v for v in violations if v.rule == 2], [])
+
+    def test_synthetic_illustration_wording_does_not_trigger(self):
+        text = "# Отчёт\n## Раздел 🟢\nСинтетическая иллюстрация: «кажется, что волосы как пакля».\n"
+        violations = cjm_lint.lint_text(text)
+        self.assertEqual([v for v in violations if v.rule == 2], [])
+
+
+# ----------------------------------------------------------------------------
+# Правило 3: легенда + маркеры разделов
+# ----------------------------------------------------------------------------
+
+
+class TestRule3TrustMap(unittest.TestCase):
+    def test_missing_legend_word_is_flagged(self):
+        text = "# Отчёт\n\n## Раздел данных 🔴\n\nЗдесь про данные, без явной легенды в документе.\n"
+        violations = cjm_lint.lint_text(text)
+        rule3 = [v for v in violations if v.rule == 3]
+        self.assertTrue(any("Легенда" in v.message or "легенда" in v.message.lower() for v in rule3))
+
+    def test_missing_markers_in_document_is_flagged_even_with_legend_word(self):
+        text = "# Отчёт\n\n## Легенда карты доверия\n\nЕсть только 🔴 маркер здесь, остальных нет.\n"
+        violations = cjm_lint.lint_text(text)
+        rule3 = [v for v in violations if v.rule == 3]
+        self.assertTrue(any("не хватает маркеров" in v.message for v in rule3))
+
+    def test_section_without_any_marker_is_flagged(self):
+        text = (
+            "# Отчёт\n\n"
+            "## Легенда карты доверия\n\n"
+            "- 🟢 модельное качественное\n- 🟡 гипотеза для проверки\n- 🔴 требует данных\n\n"
+            "## Раздел без маркера\n\n"
+            "Здесь просто текст без эмодзи вообще.\n"
+        )
+        violations = cjm_lint.lint_text(text)
+        rule3 = [v for v in violations if v.rule == 3]
+        self.assertEqual(len(rule3), 1, f"ожидалось ровно одно нарушение (раздел без маркера), получено: {rule3}")
+        self.assertIn("Раздел без маркера", rule3[0].message)
+
+    def test_marker_in_section_body_not_heading_still_passes(self):
+        """Маркер может быть в теле раздела, не обязательно в самом заголовке."""
+        text = (
+            "# Отчёт\n\n"
+            "## Легенда карты доверия\n\n"
+            "- 🟢 модельное качественное\n- 🟡 гипотеза для проверки\n- 🔴 требует данных\n\n"
+            "## Сегмент 1\n\n"
+            "Статус: 🟢 модельное качественное.\n"
+        )
+        violations = cjm_lint.lint_text(text)
+        self.assertEqual([v for v in violations if v.rule == 3], [])
+
+    def test_nested_h3_content_counts_toward_parent_h2_section(self):
+        text = (
+            "# Отчёт\n\n"
+            "## Легенда карты доверия\n\n"
+            "- 🟢 модельное качественное\n- 🟡 гипотеза для проверки\n- 🔴 требует данных\n\n"
+            "## Сегмент 1\n\n"
+            "### Мотивация\n\n"
+            "Текст без маркера тут.\n\n"
+            "### Барьер 🟡\n\n"
+            "Текст про барьер.\n"
+        )
+        violations = cjm_lint.lint_text(text)
+        self.assertEqual([v for v in violations if v.rule == 3], [])
+
+    def test_h1_preamble_before_first_h2_is_not_checked(self):
+        text = (
+            "# Отчёт без раздела вообще (только титул)\n\n"
+            "Просто текст сразу под титулом, без эмодзи.\n"
+        )
+        violations = cjm_lint.lint_text(text)
+        # Заголовков уровня 2 нет вовсе -> check_section_markers не находит ни одного
+        # раздела для проверки; но легенда всё равно отсутствует (правило 3а).
+        self.assertEqual([v for v in violations if "не содержит маркера" in v.message], [])
+
+
+# ----------------------------------------------------------------------------
+# Правило 4: запрещённые обещания / формулировка точности
+# ----------------------------------------------------------------------------
+
+
+class TestRule4ForbiddenPromises(unittest.TestCase):
+    def test_percent_will_buy_phrase_is_flagged(self):
+        text = "# Отчёт\n## Раздел 🟢\n70% купят этот продукт после просмотра ролика.\n"
+        violations = cjm_lint.lint_text(text)
+        rule4 = [v for v in violations if v.rule == 4]
+        self.assertTrue(any("% купят" in v.message for v in rule4))
+
+    def test_sales_forecast_phrase_is_flagged(self):
+        text = "# Отчёт\n## Раздел 🟢\nПрогноз продаж на следующий квартал — рост в 2 раза.\n"
+        violations = cjm_lint.lint_text(text)
+        rule4 = [v for v in violations if v.rule == 4]
+        self.assertTrue(any("прогноз продаж" in v.message for v in rule4))
+
+    def test_brand_lift_phrase_is_flagged_case_insensitively(self):
+        text = "# Отчёт\n## Раздел 🟢\nОжидаем сильный Brand Lift после кампании.\n"
+        violations = cjm_lint.lint_text(text)
+        rule4 = [v for v in violations if v.rule == 4]
+        self.assertTrue(any("brand lift" in v.message.lower() for v in rule4))
+
+    def test_bad_accuracy_wording_is_flagged(self):
+        text = "# Отчёт\n## Раздел 🟢\nТочность метода составляет 90% для всех сегментов.\n"
+        violations = cjm_lint.lint_text(text)
+        rule4 = [v for v in violations if v.rule == 4]
+        self.assertTrue(any("R=0,72" in v.message for v in rule4))
+
+    def test_canonical_accuracy_wording_passes(self):
+        text = "# Отчёт\n## Раздел 🟢\nМетод SSR: R=0,72 (~90% теоретического потолка).\n"
+        violations = cjm_lint.lint_text(text)
+        self.assertEqual([v for v in violations if v.rule == 4], [])
+
+    def test_accuracy_word_without_percent_does_not_trigger(self):
+        text = "# Отчёт\n## Раздел 🟢\nТочность метода на этом сегменте не определена.\n"
+        violations = cjm_lint.lint_text(text)
+        self.assertEqual([v for v in violations if v.rule == 4], [])
+
+
+# ----------------------------------------------------------------------------
+# Многофайловая оркестрация (lint_files)
+# ----------------------------------------------------------------------------
+
+
+class TestLintFilesMultiFile(unittest.TestCase):
+    def test_legend_in_report_satisfies_extra_files_without_own_legend(self):
+        report = (
+            "# Отчёт\n\n## Легенда карты доверия\n\n"
+            "- 🟢 модельное качественное\n- 🟡 гипотеза для проверки\n- 🔴 требует данных\n\n"
+            "## Сегмент 1 🟢\n\nТекст.\n"
+        )
+        extra = "## Черновик сегмента 2 🟡\n\nТекст без собственной легенды.\n"
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            report_path = _write(tmp, "cjm_report.md", report)
+            extra_path = _write(tmp, "02_cjm_seg2.md", extra)
+            results = cjm_lint.lint_files([report_path, extra_path])
+            legend_violations = [v for _, v in results if "Легенда" in v.message or "маркеров карты" in v.message]
+            self.assertEqual(legend_violations, [])
+
+    def test_section_marker_check_is_per_file(self):
+        report = (
+            "# Отчёт\n\n## Легенда карты доверия\n\n"
+            "- 🟢 модельное качественное\n- 🟡 гипотеза для проверки\n- 🔴 требует данных\n\n"
+            "## Сегмент 1 🟢\n\nТекст.\n"
+        )
+        extra_bad = "## Раздел без маркера\n\nТекст совсем без эмодзи.\n"
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            report_path = _write(tmp, "cjm_report.md", report)
+            extra_path = _write(tmp, "02_cjm_bad.md", extra_bad)
+            results = cjm_lint.lint_files([report_path, extra_path])
+            section_violations = [
+                (fname, v) for fname, v in results if v.rule == 3 and "не содержит маркера" in v.message
+            ]
+            self.assertEqual(len(section_violations), 1)
+            self.assertEqual(section_violations[0][0], "02_cjm_bad.md")
+
+
+# ----------------------------------------------------------------------------
+# CLI end-to-end (subprocess) — exit-коды
+# ----------------------------------------------------------------------------
+
+
+class TestCliExitCodes(unittest.TestCase):
+    def test_clean_report_exits_zero(self):
+        with tempfile.TemporaryDirectory() as td:
+            report_path = _write(Path(td), "cjm_report.md", CLEAN_REPORT)
+            proc = subprocess.run(
+                [sys.executable, str(CJM_LINT_PATH), "--report", str(report_path)],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(proc.returncode, 0, f"stdout={proc.stdout}\nstderr={proc.stderr}")
+            self.assertIn("OK", proc.stdout)
+
+    def test_dirty_report_exits_one_and_lists_violations(self):
+        dirty = "# Отчёт\n## Раздел 🟢\nДоля сегмента: 42% без источника.\n"
+        with tempfile.TemporaryDirectory() as td:
+            report_path = _write(Path(td), "cjm_report.md", dirty)
+            proc = subprocess.run(
+                [sys.executable, str(CJM_LINT_PATH), "--report", str(report_path)],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(proc.returncode, 1)
+            self.assertIn("Правило 1", proc.stdout)
+            self.assertIn("ИТОГО", proc.stdout)
+
+    def test_missing_file_exits_one(self):
+        proc = subprocess.run(
+            [sys.executable, str(CJM_LINT_PATH), "--report", "/nonexistent/cjm_report.md"],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(proc.returncode, 1)
+
+    def test_no_arguments_exits_one(self):
+        proc = subprocess.run(
+            [sys.executable, str(CJM_LINT_PATH)],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(proc.returncode, 1)
+
+    def test_extra_only_without_report_works(self):
+        with tempfile.TemporaryDirectory() as td:
+            extra_path = _write(Path(td), "02_cjm_seg1.md", CLEAN_REPORT)
+            proc = subprocess.run(
+                [sys.executable, str(CJM_LINT_PATH), "--extra", str(extra_path)],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(proc.returncode, 0, f"stdout={proc.stdout}\nstderr={proc.stderr}")
+
+
+# ----------------------------------------------------------------------------
+# Самотест на реальном references/cjm_report_template.md (self-skip если ещё нет)
+# ----------------------------------------------------------------------------
+
+
+class TestRealReportTemplate(unittest.TestCase):
+    def test_real_template_lints_clean_if_present(self):
+        """
+        Спецификация §4 требует "юнит-тест на самом шаблоне отчёта" — как только
+        сборщик [B1] создаст references/cjm_report_template.md, этот тест проверит
+        его напрямую. Самопропуск, если файла ещё нет (не моя зона сборки) —
+        не блокирует общий прогон test_cjm_lint.py.
+        """
+        real_path = _SCRIPTS_DIR.parent / "references" / "cjm_report_template.md"
+        if not real_path.exists():
+            self.skipTest("references/cjm_report_template.md ещё не создан (не моя зона сборки)")
+        violations = cjm_lint.lint_file(real_path)
+        self.assertEqual(
+            violations,
+            [],
+            f"references/cjm_report_template.md должен проходить линтер начисто, найдено: {violations}",
+        )
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

@@ -1,0 +1,16 @@
+# Окружение и кэши
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
+
+# Клиентские данные (JDE/кофе) — только локально, в репозиторий не публикуются
+/panel/segments/*.yaml
+/panel/sources.md
+/studies/demo_claims.yaml
+
+# Прогоны: локальные результаты не публикуются,
+# кроме эталонного пилота segment_map (демо-категория, вымышленный бренд)
+/runs/*
+!/runs/cjm_hairloss_demo_20260710-0017/
+!/runs/cjm_hairloss_demo_rtb_20260710-0035/

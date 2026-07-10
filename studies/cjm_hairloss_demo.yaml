@@ -1,0 +1,24 @@
+# studies/cjm_hairloss_demo.yaml — пилотный прогон режима segment_map (AI CJM).
+# Схема — spec_synthetic-panel_v1.1_segment_map.md §2. Демо: вымышленный бренд,
+# без реального препарата/данных — цель пилота проверить пайплайн end-to-end
+# (DoD §5.2), а не выдать реальный клиентский вывод.
+
+name: cjm_hairloss_demo
+type: segment_map
+
+category: "средства от выпадения волос"
+brand: "ДемоБренд (вымышленный)"
+vertical: pharma_otc            # безрецептурная категория -> допустима обобщённая
+                                 # демо-инструкция категории на стадии 0 (см. cjm_init.py:
+                                 # REFUSAL_RX_NO_INSTRUCTION применяется только к pharma_rx)
+
+runs_for_stability: 3            # минимум по принципу §1.4 — ровно минимум для пилота
+segments_target_range: [5, 12]
+
+data_inputs:
+  drug_instruction: null         # демо — используем обобщённую инструкцию категории (стадия 0)
+  social_listening: null         # данных нет -> стадия 3 оставляет поля 🔴
+  category_data: null
+
+rtb_candidates_per_segment: 4
+test_segments: 2                 # сколько устойчивых сегментов ядра прогнать через SSR-тест RTB
