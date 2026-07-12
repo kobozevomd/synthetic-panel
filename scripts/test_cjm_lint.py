@@ -17,6 +17,19 @@ test_cjm_lint.py — юнит-тесты линтера честности (scri
     - CLI end-to-end (subprocess): exit 0 на чистом образце, exit 1 на грязном.
     - самотест на references/cjm_report_template.md, если он уже существует
       (self-skip, если сборщик [B1] ещё не создал файл — не блокирует прогон).
+
+Добавлено v1.2 (spec_synthetic-panel_v1.2.md, задание [B2] п.1, п.5):
+    - warn-слой ИИ-измов (TestStyleWarningsAiIsms): каждый паттерн-минимум по
+      отдельной фикстуре (-ориентированн/-фокусированн/осознанн.. потребител/
+      длинное дефисное слово >18 симв.), дедупликация по спану, маскировка
+      несъёмного блока дисклеймеров, отсутствие влияния на lint_text()/exit-код
+      (CLI-тесты в TestCliExitCodes: warn-only отчёт всё равно exit 0/1 строго
+      по нарушениям правил 1-4, но блок "Стилистические предупреждения" печатается).
+    - конкурентная красная зона в правиле 4 (TestRule4CompetitiveRedZone): «доля
+      рынка»/«switch rate»/«отнимем ... %»/«переключим ... %» без тега источника,
+      включая контрольный позитивный тест на РЕКОМЕНДОВАННУЮ спецификацией
+      формулировку («какими сообщениями и от кого отстраиваться», не «сколько
+      отнимем») — она обязана проходить линтер начисто.
 """
 
 from __future__ import annotations
@@ -445,6 +458,131 @@ class TestRule4ForbiddenPromises(unittest.TestCase):
 
 
 # ----------------------------------------------------------------------------
+# Правило 4 (расширение v1.2, spec_synthetic-panel_v1.2.md §Модуль 3 п.4):
+# конкурентная красная зона — «доля рынка»/«switch rate»/«отнимем ... %»/
+# «переключим ... %» без тега источника.
+# ----------------------------------------------------------------------------
+
+
+class TestRule4CompetitiveRedZone(unittest.TestCase):
+    def test_market_share_phrase_without_tag_is_flagged(self):
+        text = "# Отчёт\n## Раздел 🟢\nНаша доля рынка вырастет за счёт конкурента в этой категории.\n"
+        violations = cjm_lint.lint_text(text)
+        rule4 = [v for v in violations if v.rule == 4]
+        self.assertTrue(any("доля рынка" in v.message for v in rule4), rule4)
+
+    def test_market_share_declension_doli_rynka_is_also_flagged(self):
+        text = "# Отчёт\n## Раздел 🟢\nОжидаем рост доли рынка нашего бренда в этом сегменте.\n"
+        violations = cjm_lint.lint_text(text)
+        self.assertTrue(any(v.rule == 4 for v in violations))
+
+    def test_market_share_phrase_with_source_tag_passes(self):
+        text = "# Отчёт\n## Раздел 🟢\nТекущая доля рынка бренда — 12% [BA], по данным клиента.\n"
+        violations = cjm_lint.lint_text(text)
+        self.assertEqual([v for v in violations if v.rule == 4], [])
+
+    def test_switch_rate_without_tag_is_flagged_even_with_hypothesis_word(self):
+        """Ключевая семантика: в отличие от правила 1, слово «гипотеза» НЕ
+        освобождает от тега источника для конкурентных стоп-паттернов (см.
+        докстринг cjm_lint.py — пометка "гипотеза" не чинит структурную
+        неспособность метода измерить switch rate)."""
+        text = "# Отчёт\n## Раздел 🟡\nГипотеза: switch rate для этого сегмента около 20%.\n"
+        violations = cjm_lint.lint_text(text)
+        rule4 = [v for v in violations if v.rule == 4]
+        self.assertTrue(any("switch rate" in v.message.lower() for v in rule4), rule4)
+
+    def test_switch_rate_case_insensitive_with_tag_passes(self):
+        text = "# Отчёт\n## Раздел 🟢\nSwitch Rate категории по историческим данным — 20% [Mediascope].\n"
+        violations = cjm_lint.lint_text(text)
+        self.assertEqual([v for v in violations if v.rule == 4], [])
+
+    def test_otnimem_with_percent_without_tag_is_flagged(self):
+        text = "# Отчёт\n## Раздел 🟡\nМы отнимем 15% пользователей у конкурента этим сообщением.\n"
+        violations = cjm_lint.lint_text(text)
+        rule4 = [v for v in violations if v.rule == 4]
+        self.assertTrue(any("отнимем" in v.message for v in rule4), rule4)
+
+    def test_otnimem_without_percent_is_not_flagged(self):
+        """«отнимем ... %» из спецификации — процент ОБЯЗАТЕЛЕН для срабатывания
+        этого под-паттерна (см. докстринг: «...» между глаголом и «%»)."""
+        text = "# Отчёт\n## Раздел 🟢\nОтнимем внимание аудитории у конкурента ярким сообщением.\n"
+        violations = cjm_lint.lint_text(text)
+        self.assertEqual([v for v in violations if v.rule == 4], [])
+
+    def test_pereklyuchim_with_percent_without_tag_is_flagged(self):
+        text = "# Отчёт\n## Раздел 🟡\nЭто сообщение переключит 20% пользователей конкурента, гипотеза.\n"
+        violations = cjm_lint.lint_text(text)
+        rule4 = [v for v in violations if v.rule == 4]
+        self.assertTrue(any("переключим" in v.message for v in rule4), rule4)
+
+    def test_pereklyuchim_without_percent_is_not_flagged(self):
+        text = "# Отчёт\n## Раздел 🟢\nПопробуем переключить их на наш бренд этим сообщением.\n"
+        violations = cjm_lint.lint_text(text)
+        self.assertEqual([v for v in violations if v.rule == 4], [])
+
+    def test_pereklyuchim_with_word_form_percent_without_sign_is_flagged(self):
+        """Процент словом, без символа «%» (находка №4 review_v1.1.md,
+        PERCENT_WORD_RE) тоже должен удовлетворять требованию "есть процент
+        в блоке" для «переключим ... %»."""
+        text = "# Отчёт\n## Раздел 🟡\nПереключим двадцать процентов аудитории конкурента, гипотеза.\n"
+        violations = cjm_lint.lint_text(text)
+        self.assertTrue(any(v.rule == 4 for v in violations))
+
+    def test_otnimem_with_tag_passes(self):
+        text = "# Отчёт\n## Раздел 🟢\nПо факту прошлых кампаний отняли 15% [BA] у основного конкурента.\n"
+        violations = cjm_lint.lint_text(text)
+        self.assertEqual([v for v in violations if v.rule == 4], [])
+
+    def test_spec_recommended_formula_sentence_passes_clean(self):
+        """Контрольный позитивный тест: формулировка, прямо рекомендованная
+        спецификацией («какими сообщениями и от кого отстраиваться», не
+        «сколько отнимем») обязана проходить линтер начисто — ни один стоп-
+        паттерн не должен сработать на собственных словах спецификации."""
+        text = (
+            "# Отчёт\n## Раздел 🟢\n"
+            "Результат отвечает на вопрос, какими сообщениями и от кого отстраиваться, "
+            "а не сколько отнимем — это качественная карта территорий, а не прогноз доли.\n"
+        )
+        violations = cjm_lint.lint_text(text)
+        self.assertEqual([v for v in violations if v.rule == 4], [])
+
+    def test_competitive_red_zone_respects_table_row_atomicity(self):
+        """Регресс той же природы, что находка №1 review_v1.1.md — тег в одном
+        ряду таблицы не должен «отмывать» непомеченный стоп-паттерн в соседнем ряду."""
+        text = (
+            "# Отчёт\n## Раздел 🟢\n"
+            "| Конкурент | Комментарий |\n"
+            "|---|---|\n"
+            "| Альфа | доля рынка стабильна [BA] |\n"
+            "| Бета | отнимем у них 10% без указания источника |\n"
+        )
+        violations = cjm_lint.lint_text(text)
+        rule4 = [v for v in violations if v.rule == 4]
+        self.assertEqual(len(rule4), 1, f"ожидалось 1 нарушение (ряд «Бета»), получено: {rule4}")
+        self.assertIn("Бета", rule4[0].excerpt)
+
+    def test_competitive_disclaimer_block_is_masked_from_rule4(self):
+        """references/competitive_report_template.md фиксирует статичный раздел
+        «Границы этого отчёта (конкурентная отстройка)», который ДОСЛОВНО
+        упоминает «доля рынка»/«switch rate», ОБЪЯСНЯЯ, что отчёт их не
+        оценивает (см. spec_synthetic-panel_v1.2.md §Модуль 3 п.4,
+        docstring этого модуля, DISCLAIMER_BLOCK_MARKERS). Без маскировки
+        такой дословно скопированный дисклеймер ложно ловится правилом 4 —
+        та же природа находки, что уже чинилась для DISCLAIMER_BLOCK_CJM."""
+        text = (
+            "# Отчёт\n## Раздел 🟢\nВсё в порядке здесь.\n\n"
+            "<!-- DISCLAIMER_BLOCK_COMPETITIVE_START -->\n"
+            "## Границы этого отчёта (конкурентная отстройка)\n\n"
+            "Реальная доля рынка и switch rate этим отчётом не оцениваются и не "
+            "прогнозируются — ни в процентах, ни любым другим количественным способом.\n"
+            "<!-- DISCLAIMER_BLOCK_COMPETITIVE_END -->\n"
+        )
+        violations = cjm_lint.lint_text(text)
+        rule4 = [v for v in violations if v.rule == 4]
+        self.assertEqual(rule4, [], f"дисклеймер должен быть замаскирован, получено: {rule4}")
+
+
+# ----------------------------------------------------------------------------
 # Многофайловая оркестрация (lint_files)
 # ----------------------------------------------------------------------------
 
@@ -540,6 +678,126 @@ class TestCliExitCodes(unittest.TestCase):
             )
             self.assertEqual(proc.returncode, 0, f"stdout={proc.stdout}\nstderr={proc.stderr}")
 
+    def test_style_warnings_do_not_affect_exit_code_on_otherwise_clean_report(self):
+        """v1.2 §Модуль 1 п.3: warn-слой НЕ влияет на exit-код — отчёт, чистый по
+        правилам 1-4, но с ИИ-измом (сегмент «Ингредиент-ориентированные
+        рутинщики», буквально мотивирующий пример из spec §Модуль 1 п.1),
+        обязан по-прежнему выйти с exit 0, но напечатать блок предупреждений."""
+        report_with_ai_ism = CLEAN_REPORT.replace(
+            "## Сегмент 1: Молодые мамы после родов 🟢 (3/3)",
+            "## Сегмент 1: Ингредиент-ориентированные рутинщики 🟢 (3/3)",
+        )
+        with tempfile.TemporaryDirectory() as td:
+            report_path = _write(Path(td), "cjm_report.md", report_with_ai_ism)
+            proc = subprocess.run(
+                [sys.executable, str(CJM_LINT_PATH), "--report", str(report_path)],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(proc.returncode, 0, f"stdout={proc.stdout}\nstderr={proc.stderr}")
+            self.assertIn("OK", proc.stdout)
+            self.assertIn("Стилистические предупреждения (не блокируют):", proc.stdout)
+            self.assertIn("ориентированн", proc.stdout)
+
+    def test_style_warnings_are_also_printed_alongside_real_violations(self):
+        dirty_with_ai_ism = (
+            "# Отчёт\n## Раздел 🟢\n"
+            "Доля сегмента: 42% без источника, для осознанных потребителей рынка.\n"
+        )
+        with tempfile.TemporaryDirectory() as td:
+            report_path = _write(Path(td), "cjm_report.md", dirty_with_ai_ism)
+            proc = subprocess.run(
+                [sys.executable, str(CJM_LINT_PATH), "--report", str(report_path)],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(proc.returncode, 1)
+            self.assertIn("ИТОГО", proc.stdout)
+            self.assertIn("Стилистические предупреждения (не блокируют):", proc.stdout)
+
+
+# ----------------------------------------------------------------------------
+# v1.2, warn-слой ИИ-измов (StyleWarning) — spec_synthetic-panel_v1.2.md §Модуль 1 п.3
+# ----------------------------------------------------------------------------
+
+
+class TestStyleWarningsAiIsms(unittest.TestCase):
+    def test_clean_report_has_no_style_warnings(self):
+        self.assertEqual(cjm_lint.collect_style_warnings(CLEAN_REPORT), [])
+
+    def test_orientirovannost_suffix_is_warned(self):
+        text = "## Раздел 🟢\nИнгредиент-ориентированные рутинщики читают составы.\n"
+        warnings = cjm_lint.collect_style_warnings(text)
+        self.assertTrue(any("ориентированн" in w.message for w in warnings), warnings)
+
+    def test_fokusirovannost_suffix_is_warned(self):
+        text = "## Раздел 🟢\nКлиент-фокусированные покупатели ищут выгоду.\n"
+        warnings = cjm_lint.collect_style_warnings(text)
+        self.assertTrue(any("фокусированн" in w.message for w in warnings), warnings)
+
+    def test_osoznannye_potrebiteli_stamp_is_warned(self):
+        text = "## Раздел 🟢\nЭто сегмент осознанных потребителей категории.\n"
+        warnings = cjm_lint.collect_style_warnings(text)
+        self.assertTrue(any("осознанн" in w.message for w in warnings), warnings)
+
+    def test_osoznannye_potrebiteli_plural_nominative_is_warned(self):
+        text = "## Раздел 🟢\nОсознанные потребители читают состав перед покупкой.\n"
+        warnings = cjm_lint.collect_style_warnings(text)
+        self.assertTrue(any("осознанн" in w.message for w in warnings), warnings)
+
+    def test_long_hyphenated_word_without_named_suffix_is_warned(self):
+        text = "## Раздел 🟢\nИнформационно-перегруженные покупатели теряются в ассортименте.\n"
+        warnings = cjm_lint.collect_style_warnings(text)
+        self.assertTrue(any("дефисное составное" in w.message for w in warnings), warnings)
+        self.assertTrue(any("Информационно-перегруженные" in w.excerpt for w in warnings), warnings)
+
+    def test_short_hyphenated_word_is_not_warned(self):
+        text = "## Раздел 🟢\nЭто бизнес-класс обслуживания, какой-то стандартный уровень.\n"
+        warnings = cjm_lint.collect_style_warnings(text)
+        self.assertEqual(warnings, [])
+
+    def test_no_duplicate_warning_for_word_matching_both_named_pattern_and_length(self):
+        """«Ингредиент-ориентированные» (26 символов) одновременно матчит именной
+        паттерн -ориентированн И порог длины >18 — должно быть ОДНО предупреждение
+        на этот спан, не два (см. докстринг check_ai_isms — дедупликация по span)."""
+        text = "## Раздел 🟢\nИнгредиент-ориентированные рутинщики.\n"
+        warnings = cjm_lint.collect_style_warnings(text)
+        overlapping = [w for w in warnings if "ориентированн" in w.excerpt.lower()]
+        self.assertEqual(len(overlapping), 1, f"ожидалось 1 предупреждение на это слово, получено: {overlapping}")
+
+    def test_disclaimer_block_is_masked_from_style_warnings(self):
+        text = (
+            "## Раздел 🟢\nТекст в порядке.\n\n"
+            "<!-- DISCLAIMER_BLOCK_START -->\n"
+            "Здесь упомянуты ингредиент-ориентированные предположения дословно из шаблона.\n"
+            "<!-- DISCLAIMER_BLOCK_END -->\n"
+        )
+        warnings = cjm_lint.collect_style_warnings(text)
+        self.assertEqual(warnings, [])
+
+    def test_style_warnings_are_not_included_in_lint_text_violations(self):
+        """Warn-слой НЕ должен просочиться в список Violation, возвращаемый
+        lint_text() — контракт для 45 существующих тестов не меняется. Берём
+        структурно ПОЛНОСТЬЮ чистый образец (легенда + все маркеры уже есть в
+        CLEAN_REPORT), чтобы единственная переменная — вставленный ИИ-изм."""
+        text_with_ai_ism = CLEAN_REPORT.replace(
+            "## Сегмент 1: Молодые мамы после родов 🟢 (3/3)",
+            "## Сегмент 1: Ингредиент-ориентированные рутинщики 🟢 (3/3)",
+        )
+        violations = cjm_lint.lint_text(text_with_ai_ism)
+        self.assertEqual(violations, [])  # ни одно из правил 1-4 не нарушено этим текстом
+        self.assertTrue(cjm_lint.collect_style_warnings(text_with_ai_ism))  # но warn-слой это ловит
+
+    def test_lint_files_style_warnings_multi_file(self):
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            p1 = _write(tmp, "a.md", "## Раздел 🟢\nИнгредиент-ориентированные рутинщики.\n")
+            p2 = _write(tmp, "b.md", "## Раздел 🟢\nВсё чисто здесь, никаких канцеляризмов.\n")
+            results = cjm_lint.lint_files_style_warnings([p1, p2])
+            filenames = {fname for fname, _ in results}
+            self.assertIn("a.md", filenames)
+            self.assertNotIn("b.md", filenames)
+
 
 # ----------------------------------------------------------------------------
 # Самотест на реальном references/cjm_report_template.md (self-skip если ещё нет)
@@ -563,6 +821,43 @@ class TestRealReportTemplate(unittest.TestCase):
             [],
             f"references/cjm_report_template.md должен проходить линтер начисто, найдено: {violations}",
         )
+
+
+
+class TestHtmlCommentMasking(unittest.TestCase):
+    """v1.2, находка №1 (CRITICAL) review_v1.2.md: HTML-комментарии — служебные
+    инструкции сборщику, читатель отчёта их не видит; правила 1/2/4 и warn-слой
+    к ним не применяются. Порядок препроцессинга: mask_reference_blocks →
+    mask_html_comments (маркеры дисклеймеров — сами комментарии)."""
+
+    LEGEND = "Легенда карты доверия: 🟢 🟡 🔴\n"
+
+    def test_violation_inside_single_line_comment_not_flagged(self):
+        text = self.LEGEND + "## Раздел 🟢\n<!-- пример: доля рынка 40% без тега -->\nЧистая строка.\n"
+        self.assertEqual(cjm_lint.lint_text(text), [])
+
+    def test_violation_inside_multiline_comment_not_flagged(self):
+        text = (self.LEGEND + "## Раздел 🟢\n<!--\n  запрещено: switch rate, отнимем 5%\n"
+                "  и доля рынка 40 процентов\n-->\nЧистая строка.\n")
+        self.assertEqual(cjm_lint.lint_text(text), [])
+
+    def test_same_violation_outside_comment_still_flagged(self):
+        text = self.LEGEND + "## Раздел 🟢\nдоля рынка 40% без тега\n"
+        self.assertNotEqual(cjm_lint.lint_text(text), [])
+
+    def test_visible_text_around_inline_comment_still_checked(self):
+        text = self.LEGEND + "## Раздел 🟢\nдоля рынка 40% <!-- пометка --> без тега\n"
+        self.assertNotEqual(cjm_lint.lint_text(text), [])
+
+    def test_style_warning_inside_comment_not_flagged(self):
+        text = "<!-- ингредиент-ориентированные рутинщики -->\nОбычный текст.\n"
+        self.assertEqual(cjm_lint.collect_style_warnings(text), [])
+
+    def test_disclaimer_masking_survives_comment_stripping(self):
+        text = (self.LEGEND + "## Раздел 🟢\n<!-- DISCLAIMER_BLOCK_START -->\n"
+                "Здесь упоминается Brand Lift и 40% без тега — это несъёмный блок.\n"
+                "<!-- DISCLAIMER_BLOCK_END -->\nЧистая строка.\n")
+        self.assertEqual(cjm_lint.lint_text(text), [])
 
 
 if __name__ == "__main__":

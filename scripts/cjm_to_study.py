@@ -7,6 +7,23 @@ CLI зафиксирован в SKILL.md §4:
 
     python scripts/cjm_to_study.py --run runs/cjm_<имя>_<ts>/
 
+=== v1.2, режим competitive_positioning: comp_to_study.py — ОТДЕЛЬНЫЙ файл,
+    не расширение этого (spec_synthetic-panel_v1.2.md §Модуль 3, задание [B2]
+    п.4 явно оставляло выбор открытым) ===
+
+Мост «сообщения C4 -> study.yaml» для режима "Конкурентная отстройка" реализован
+как scripts/comp_to_study.py — НЕ как новая ветка/флаг здесь. Полное обоснование
+решения (включая согласование с уже написанным на момент реализации
+references/competitive_prompts_ru.md, который прямо фиксирует команду
+`python scripts/comp_to_study.py --run ...`) — в докстринге comp_to_study.py,
+раздел "Решение...". Коротко: разная форма входа (там сегменты УЖЕ существуют
+в panel/segments/**, экспорта нет вовсе), разные имена метаданных сообщений
+(territory/targeted_competitor вместо targeted_barrier/targeted_benefit),
+разный источник "каких сегментов это касается" (manifest["test_segments"]
+против 01_segments_merged.yaml). Общий код (normalize_candidates — id/text,
+проверка "минимум 2 стимула") ИМПОРТИРУЕТСЯ comp_to_study.py отсюда, а не
+дублируется — см. её докстринг/импорты.
+
 По умолчанию ОДНОЙ командой (см. SKILL.md: "кладёт сегменты ядра в
 panel/segments/<category_slug>/<id>.yaml ... и собирает RTB-кандидатов в
 studies/*.yaml"):

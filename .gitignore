@@ -9,8 +9,18 @@ __pycache__/
 /panel/sources.md
 /studies/demo_claims.yaml
 
+# Клиентские данные (Азелик/акне) — только локально, в репозиторий не публикуются
+/panel/segments/azelik/
+/studies/cjm_azelik*
+/studies/comp_azelik*
+
 # Прогоны: локальные результаты не публикуются,
 # кроме эталонного пилота segment_map (демо-категория, вымышленный бренд)
 /runs/*
 !/runs/cjm_hairloss_demo_20260710-0017/
 !/runs/cjm_hairloss_demo_rtb_20260710-0035/
+
+# Явные паттерны для клиентских прогонов (Азелик) — избыточно поверх /runs/*
+# выше, но фиксирует зону явно на случай будущих правок общего правила
+/runs/cjm_azelik*
+/runs/comp_azelik*
