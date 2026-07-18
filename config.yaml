@@ -10,10 +10,30 @@ llm:
   samples_per_respondent: 2  # дефолт, если не задано в study.yaml
 
 embedding:
-  model: paraphrase-multilingual-MiniLM-L12-v2   # быстрый дефолт для демо (см. §3)
-  # прод-рекомендация: intfloat/multilingual-e5-large-instruct (+prefix "query: ")
-  prefix: ""                 # для e5-семейства: "query: "
+  # ВАЛИДИРОВАННЫЙ СТЕК (spec_synthetic-panel_v1.3.md §1.2 п.3, чинит Д2): выбран
+  # по результатам scripts/embedder_ab.py — сравнение 3 эмбеддеров (4 конфигурации
+  # префиксов) на якорях v2 (references/anchors_ru.yaml) гейтом scripts/test_anchors.py.
+  # Подробные числа и обоснование — docs/embedder_ab_v13.md.
+  model: ai-forever/ru-en-RoSBERTa
+  # Префикс "classification:" — рекомендация самой модели для симметричных задач
+  # (STS/paraphrase/NLI), а не "search_query:/search_document:" (те — для
+  # асимметричного retrieval и дали в разы худший результат, см. отчёт AB). Единый
+  # префикс на обе роли (ответ и якорь) — совместимо с текущим SentenceTransformerBackend
+  # (один prefix на весь encode()), правка ssr_core.py НЕ требуется.
+  prefix: "classification: "
   device: cpu
+  # Победитель AB (docs/embedder_ab_v13.md): 10/12 монотонных наборов (leave-one-set-out),
+  # E(5)>E(4) и rank-recovery пройдены на всех 3 шкалах; оба непройденных набора — умеренные
+  # расхождения (-0.09..-0.18), ни один не крупный. Рантап — paraphrase-multilingual-
+  # MiniLM-L12-v2 (без префикса, текущий дефолт до этой итерации): тоже проходит гейт целиком
+  # (тоже 10/12, план "Б" — быстрее и без скачивания, см. отчёт AB §5), но с более широким
+  # разбросом (один near-miss на грани шума -0.01, один настоящий провал -0.34). intfloat/
+  # multilingual-e5-large-instruct с единым инструктивным префиксом гейт НЕ проходит
+  # (appeal 2/4, purchase_intent 2/4 — см. отчёт AB, раздел "Оговорки").
+  validated_stack: true
+  validated_at: "2026-07-18"
+  validated_by: "scripts/test_anchors.py + scripts/embedder_ab.py (spec_synthetic-panel_v1.3.md §1.2 п.2-3)"
+  anchors_version: 2          # см. references/anchors_ru.yaml meta.anchors_version — стек валидирован ИМЕННО на этой версии якорей
 
 ssr:
   epsilon: 0.001

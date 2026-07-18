@@ -30,6 +30,22 @@ test_cjm_lint.py — юнит-тесты линтера честности (scri
       включая контрольный позитивный тест на РЕКОМЕНДОВАННУЮ спецификацией
       формулировку («какими сообщениями и от кого отстраиваться», не «сколько
       отнимем») — она обязана проходить линтер начисто.
+
+Добавлено v1.3 (spec_synthetic-panel_v1.3.md §1.6, §2.4; задание [B3]):
+    - TestV13RespondentWarning: слово «респондент» (словоформы) — StyleWarning,
+      НЕ Violation (lint_text() не меняется), маскировка несъёмного блока
+      дисклеймеров исключает легальные упоминания реальных респондентов метода.
+    - TestV13AiIsmExtensions: 5 новых категорий AI_ISM_PATTERNS (штампы
+      «уникальный/инновационный/революционный», канцелярит «осуществляет/
+      является ключевым», двоеточие-расшифровка в названии сегмента и
+      скобочная аналитическая пометка «рамка/подтип/условно» — оба паттерна из
+      review_v1.2.md находки №4 — плюс курируемый список «-ированн*» штампов
+      общего вида: персонализированный/таргетированный/оптимизированный/
+      диверсифицированный/стандартизированный/масштабированный/интегрированный).
+      Курируемый список — сознательная правка вместо полностью общей морфологии
+      (`\\w*ированн\\w*`): такая эвристика ловила бы собственную терминологию
+      проекта («смоделированн*», «сгенерированн*», «зафиксированн*» и т.п.) как
+      «ИИ-изм» — см. test_curated_irovann_list_does_not_flag_project_own_terminology.
 """
 
 from __future__ import annotations
@@ -800,6 +816,225 @@ class TestStyleWarningsAiIsms(unittest.TestCase):
 
 
 # ----------------------------------------------------------------------------
+# v1.3 §1.6 (Д6): warn-слой терминологии «респондент» — StyleWarning, НЕ Violation
+# ----------------------------------------------------------------------------
+
+
+class TestV13RespondentWarning(unittest.TestCase):
+    def test_respondent_word_is_warned(self):
+        text = "## Раздел 🟢\nВ прогоне участвовало 30 респондентов.\n"
+        warnings = cjm_lint.collect_style_warnings(text)
+        self.assertTrue(any("респондент" in w.message.lower() for w in warnings), warnings)
+
+    def test_respondent_word_forms_are_warned(self):
+        for form in ("респондентов", "респондентам", "респондентка", "респондентской"):
+            text = f"## Раздел 🟢\nТекст со словом {form} внутри предложения.\n"
+            warnings = cjm_lint.collect_style_warnings(text)
+            self.assertTrue(
+                any(form in w.excerpt.lower() for w in warnings), f"словоформа {form!r} не поймана: {warnings}"
+            )
+
+    def test_respondent_warning_does_not_produce_a_violation(self):
+        """StyleWarning, не Violation — lint_text() (правила 1-4) не должен
+        реагировать на само слово «респондент»."""
+        text = (
+            "# Отчёт\n\n## Легенда карты доверия 🟢🟡🔴\n\n"
+            "- 🟢 модельное качественное\n- 🟡 гипотеза\n- 🔴 требует данных\n\n"
+            "## Раздел 🟢\n\nВ прогоне участвовало 30 респондентов синтетической панели.\n"
+        )
+        violations = cjm_lint.lint_text(text)
+        self.assertEqual(violations, [], f"слово «респондент» не должно давать Violation, получено: {violations}")
+        self.assertTrue(cjm_lint.collect_style_warnings(text))
+
+    def test_respondent_inside_disclaimer_block_is_masked(self):
+        """references/disclaimers.md легально и многократно упоминает реальных
+        респондентов (AAPOR, тест-ретест) внутри несъёмного блока — маскировка
+        должна исключать эти случаи из warn-слоя, как и для ИИ-измов."""
+        text = (
+            "## Раздел 🟢\nТекст в порядке.\n\n"
+            "<!-- DISCLAIMER_BLOCK_START -->\n"
+            "Не замена количественному исследованию с реальными респондентами.\n"
+            "<!-- DISCLAIMER_BLOCK_END -->\n"
+        )
+        warnings = cjm_lint.collect_style_warnings(text)
+        self.assertEqual(warnings, [])
+
+    def test_clean_text_without_respondent_word_has_no_warning(self):
+        text = "## Раздел 🟢\nN смоделированных профилей × M независимых генераций.\n"
+        warnings = cjm_lint.collect_style_warnings(text)
+        self.assertEqual(warnings, [])
+
+    def test_respondent_warning_does_not_affect_cli_exit_code(self):
+        report = (
+            "# Отчёт\n## Раздел 🟢\nЛегенда: 🟢 🟡 🔴.\n"
+            "30 респондентов приняли участие, легенда карты доверия выше.\n"
+        )
+        with tempfile.TemporaryDirectory() as td:
+            report_path = _write(Path(td), "cjm_report.md", report)
+            proc = subprocess.run(
+                [sys.executable, str(CJM_LINT_PATH), "--report", str(report_path)],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(proc.returncode, 0, f"stdout={proc.stdout}\nstderr={proc.stderr}")
+            self.assertIn("Стилистические предупреждения (не блокируют):", proc.stdout)
+            self.assertIn("респондент", proc.stdout.lower())
+
+
+# ----------------------------------------------------------------------------
+# v1.3 §2.4: расширение AI_ISM_PATTERNS (штампы превосходной степени, канцелярит,
+# паттерны review v1.2 находки №4, курируемый список «-ированн*» штампов)
+# ----------------------------------------------------------------------------
+
+
+class TestV13AiIsmExtensions(unittest.TestCase):
+    def test_unique_stamp_is_warned(self):
+        text = "## Раздел 🟢\nЭто уникальное предложение для сегмента.\n"
+        warnings = cjm_lint.collect_style_warnings(text)
+        self.assertTrue(any("превосходной степени" in w.message for w in warnings), warnings)
+
+    def test_innovative_stamp_is_warned(self):
+        text = "## Раздел 🟢\nИнновационная формула привлекает сегмент.\n"
+        warnings = cjm_lint.collect_style_warnings(text)
+        self.assertTrue(any("превосходной степени" in w.message for w in warnings), warnings)
+
+    def test_revolutionary_stamp_is_warned(self):
+        text = "## Раздел 🟢\nРеволюционный подход к категории.\n"
+        warnings = cjm_lint.collect_style_warnings(text)
+        self.assertTrue(any("превосходной степени" in w.message for w in warnings), warnings)
+
+    def test_osuschestvlyaet_is_warned(self):
+        text = "## Раздел 🟢\nБренд осуществляет продажу через аптечный канал.\n"
+        warnings = cjm_lint.collect_style_warnings(text)
+        self.assertTrue(any("осуществляет/является ключевым" in w.message for w in warnings), warnings)
+
+    def test_yavlyaetsya_klyuchevym_is_warned(self):
+        text = "## Раздел 🟢\nЦена является ключевым барьером для сегмента.\n"
+        warnings = cjm_lint.collect_style_warnings(text)
+        self.assertTrue(any("осуществляет/является ключевым" in w.message for w in warnings), warnings)
+
+    def test_yavlyaetsya_alone_without_klyuchevym_does_not_trigger(self):
+        text = "## Раздел 🟢\nЦена является барьером для сегмента, но не единственным.\n"
+        warnings = cjm_lint.collect_style_warnings(text)
+        self.assertEqual([w for w in warnings if "ключевым" in w.message], [])
+
+    def test_colon_gloss_segment_heading_is_warned(self):
+        """review_v1.2.md находка №4 — реальный азеликский паттерн: имя сегмента
+        вида «Label: расшифровка» в заголовке "### Сегмент: ..."."""
+        text = '### Сегмент: Осторожные: боюсь сделать хуже\n\nТекст раздела.\n'
+        warnings = cjm_lint.collect_style_warnings(text)
+        self.assertTrue(any("двоеточие-расшифровка" in w.message for w in warnings), warnings)
+
+    def test_segment_heading_without_nested_colon_does_not_trigger(self):
+        """Наш собственный шаблон («### Сегмент: {{SEGMENT_NAME}}» без второго
+        двоеточия внутри имени) не должен ловиться этим паттерном."""
+        text = "### Сегмент: Взрослое акне не по возрасту\n\nТекст раздела.\n"
+        warnings = cjm_lint.collect_style_warnings(text)
+        self.assertEqual([w for w in warnings if "двоеточие-расшифровка" in w.message], [])
+
+    def test_parenthetical_myagkaya_ramka_is_warned(self):
+        text = "## Раздел 🟢\nЧувствительная кожа и краснота (мягкая рамка розацеа).\n"
+        warnings = cjm_lint.collect_style_warnings(text)
+        self.assertTrue(any("рамка/подтип/условно" in w.message for w in warnings), warnings)
+
+    def test_parenthetical_uslovno_is_warned(self):
+        text = "## Раздел 🟢\nАкне у взрослых (условно постакне) обсуждается отдельно.\n"
+        warnings = cjm_lint.collect_style_warnings(text)
+        self.assertTrue(any("рамка/подтип/условно" in w.message for w in warnings), warnings)
+
+    def test_bare_word_podtip_without_parens_does_not_trigger(self):
+        """Регресс-тест на дефект буквального регэкспа из docs/review_v1.2.md
+        (без некапturing-группы вокруг альтернатив матчил бы «подтип» вообще
+        без скобок) — здесь исправленная форма не должна ловить голое слово."""
+        text = "## Раздел 🟢\nЭто отдельный подтип категории без скобок вообще.\n"
+        warnings = cjm_lint.collect_style_warnings(text)
+        self.assertEqual([w for w in warnings if "рамка/подтип/условно" in w.message], [])
+
+    def test_parens_without_trigger_word_do_not_trigger(self):
+        text = "## Раздел 🟢\nСегмент реагирует сдержанно (без выраженного энтузиазма).\n"
+        warnings = cjm_lint.collect_style_warnings(text)
+        self.assertEqual([w for w in warnings if "рамка/подтип/условно" in w.message], [])
+
+    def test_curated_irovann_stamp_is_warned(self):
+        text = "## Раздел 🟢\nПерсонализированный подход к каждому сегменту.\n"
+        warnings = cjm_lint.collect_style_warnings(text)
+        self.assertTrue(any("-ированн*" in w.message for w in warnings), warnings)
+
+    def test_curated_irovann_stamp_all_seven_words_are_caught(self):
+        for word in (
+            "персонализированный",
+            "таргетированные",
+            "оптимизированного",
+            "диверсифицированным",
+            "стандартизированной",
+            "масштабированные",
+            "интегрированный",
+        ):
+            text = f"## Раздел 🟢\nЭто {word} элемент коммуникации.\n"
+            warnings = cjm_lint.collect_style_warnings(text)
+            self.assertTrue(any("-ированн*" in w.message for w in warnings), f"{word!r} не поймано: {warnings}")
+
+    def test_curated_irovann_list_does_not_flag_project_own_terminology(self):
+        """Регресс на дефект, найденный юнит-тестом при разработке этой самой
+        итерации (см. докстринг модуля, "v1.3, задание [B3] §1.6 + §2.4", п.(б)):
+        черновая версия использовала полностью общую морфологическую эвристику
+        `\\w*ированн\\w*` и ловила СОБСТВЕННУЮ канонiческую терминологию проекта
+        («смоделированных профилей», см. spec §1.6) как «возможный ИИ-изм» —
+        курируемый список конкретных штампов не должен повторять эту ошибку."""
+        text = (
+            "## Раздел 🟢\n"
+            "N смоделированных профилей × M независимых генераций; ответ "
+            "сгенерирован моделью, модель зафиксирована в manifest.json, прогоны "
+            "изолированы, структурированный и детерминированный джиттер, находки "
+            "верифицированы.\n"
+        )
+        warnings = cjm_lint.collect_style_warnings(text)
+        self.assertEqual(
+            [w for w in warnings if "-ированн*" in w.message],
+            [],
+            f"собственная терминология проекта не должна ловиться штампом -ированн*: {warnings}",
+        )
+
+    def test_curated_irovann_stamp_coexists_with_named_suffix_patterns(self):
+        """Курируемый список (персонализированный и т.п.) не пересекается по
+        корню с именными суффиксами -ориентированн*/-фокусированн* — оба типа
+        предупреждений должны сработать независимо на одной строке, без потери
+        одного из них."""
+        text = (
+            "## Раздел 🟢\n"
+            "Ингредиент-ориентированные рутинщики получают персонализированный "
+            "план ухода.\n"
+        )
+        warnings = cjm_lint.collect_style_warnings(text)
+        self.assertTrue(any("ориентированн" in w.excerpt.lower() for w in warnings), warnings)
+        self.assertTrue(any("персонализированн" in w.excerpt.lower() for w in warnings), warnings)
+
+    def test_new_patterns_are_style_warnings_not_violations(self):
+        """Все новые паттерны v1.3 — StyleWarning, не Violation (не влияют на exit-код)."""
+        text = (
+            "# Отчёт\n\n## Легенда карты доверия 🟢🟡🔴\n\n"
+            "- 🟢 модельное качественное\n- 🟡 гипотеза\n- 🔴 требует данных\n\n"
+            "### Сегмент: Осторожные: боюсь сделать хуже\n\n"
+            "Уникальный, инновационный, революционный подход осуществляет продажу и "
+            "является ключевым (мягкая рамка розацеа) для персонализированного сегмента.\n"
+        )
+        violations = cjm_lint.lint_text(text)
+        self.assertEqual(violations, [], f"новые паттерны не должны давать Violation: {violations}")
+        self.assertTrue(cjm_lint.collect_style_warnings(text))
+
+    def test_disclaimer_block_masks_new_patterns_too(self):
+        text = (
+            "## Раздел 🟢\nВсё чисто.\n\n"
+            "<!-- DISCLAIMER_BLOCK_CJM_START -->\n"
+            "### Ограничения режима «Карта сегментов» (AI CJM)\n\n"
+            "Уникальный подход (условно новый подтип) осуществляет анализ.\n"
+            "<!-- DISCLAIMER_BLOCK_CJM_END -->\n"
+        )
+        warnings = cjm_lint.collect_style_warnings(text)
+        self.assertEqual(warnings, [])
+
+
+# ----------------------------------------------------------------------------
 # Самотест на реальном references/cjm_report_template.md (self-skip если ещё нет)
 # ----------------------------------------------------------------------------
 
@@ -821,6 +1056,56 @@ class TestRealReportTemplate(unittest.TestCase):
             [],
             f"references/cjm_report_template.md должен проходить линтер начисто, найдено: {violations}",
         )
+
+    def test_real_competitive_template_lints_clean_if_present(self):
+        """
+        v1.3: тот же принцип, что test_real_template_lints_clean_if_present выше,
+        распространён на references/competitive_report_template.md — до этой
+        итерации у файла не было самотеста, и он реально НЕ проходил линтер
+        начисто (найдено при разработке v1.3: дублирующий несъёмный блок плюс
+        вложенные упоминания `<!-- MARKER -->` внутри внешних HTML-комментариев
+        преждевременно закрывали внешний комментарий — см. mask_html_comments,
+        не осведомлён о вложенности — и обнажали «доля рынка»/«switch rate» без
+        тега источника). Самопропуск, если файла ещё нет.
+        """
+        real_path = _SCRIPTS_DIR.parent / "references" / "competitive_report_template.md"
+        if not real_path.exists():
+            self.skipTest("references/competitive_report_template.md ещё не создан")
+        violations = cjm_lint.lint_file(real_path)
+        self.assertEqual(
+            violations,
+            [],
+            f"references/competitive_report_template.md должен проходить линтер начисто, найдено: {violations}",
+        )
+
+    def test_real_report_template_has_no_stray_comment_markers_after_masking(self):
+        """
+        Регресс-тест на класс дефекта, найденный при разработке v1.3 (см. докстринг
+        выше): вложенное упоминание `<!-- MARKER -->` внутри уже открытого внешнего
+        HTML-комментария преждевременно закрывает внешний комментарий (mask_html_
+        comments не понимает вложенность) — верный признак этого — осиротевший
+        фрагмент `-->`/`<!--`, видимый ПОСЛЕ полной маскировки. Проверяет ВСЕ три
+        шаблона отчётов сразу (report_template.md — не самостоятельный отчёт и не
+        покрыт остальными самотестами этого класса, но страдал тем же классом
+        дефекта в исходном docstring'е до правки той же итерации).
+        """
+        for relpath in (
+            "cjm_report_template.md",
+            "competitive_report_template.md",
+            "report_template.md",
+        ):
+            real_path = _SCRIPTS_DIR.parent / "references" / relpath
+            if not real_path.exists():
+                continue
+            text = real_path.read_text(encoding="utf-8")
+            masked = cjm_lint.preprocess_lines(text)
+            stray = [(i + 1, line) for i, line in enumerate(masked) if ("-->" in line or "<!--" in line)]
+            self.assertEqual(
+                stray,
+                [],
+                f"{relpath}: осиротевшие фрагменты HTML-комментария после маскировки "
+                f"(вложенное упоминание маркера внутри внешнего комментария?): {stray}",
+            )
 
 
 

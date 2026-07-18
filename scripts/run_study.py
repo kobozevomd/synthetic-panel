@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
-run_study.py — CLI-оркестратор стадий synthetic-panel (spec_synthetic-panel_v1.md §6).
+run_study.py — CLI-оркестратор стадий synthetic-panel (spec_synthetic-panel_v1.md §6,
+расширено spec_synthetic-panel_v1.3.md §1.4 "негативные контроли" и §1.5 "режим/модель").
 
     python scripts/run_study.py --study studies/<name>.yaml --stage all|generate|score|report [--run-dir DIR]
 
@@ -8,10 +9,15 @@ run_study.py — CLI-оркестратор стадий synthetic-panel (spec_s
     responses_todo.jsonl, AGENT_TASK.md   — только agent-режим, стадия generate
     responses.jsonl                       — все режимы, стадия generate
     pmf_by_respondent.csv, pmf_by_segment.csv — стадия score
+    pmf_by_sample.csv                     — НОВОЕ в v1.3, стадия score (гранулярность
+                                             "1 строка = 1 ответ", до усреднения по
+                                             сэмплам — нужно report.py для §1.3.2/1.3.4)
     report.md                             — стадия report
-    manifest.json                         — обновляется на каждой стадии (модель,
-                                             версия эмбеддера, temperature, seed,
-                                             промпт-контракт — см. §0.5)
+    manifest.json                         — обновляется на каждой стадии; ВСЕГДА (к
+                                             концу --stage report) содержит верхнеуровневые
+                                             mode/model/embedding_model/anchors_version/
+                                             controls/controls_verdict (§1.5, см.
+                                             compute_run_mode/run_report_stage)
 
 Валидация study.yaml: `type` должен быть в ALLOWED_STUDY_TYPES, иначе — отказ с
 объяснением про красную зону метода (см. validate_study_type).
@@ -24,6 +30,14 @@ responses_todo.jsonl + AGENT_TASK.md и НЕ вызывает никакую LLM
 заполнен (агент вернулся в ту же run_dir) — повторный вызов generate не
 перезаписывает его поверх, а пропускает генерацию todo (см. run_generate_stage).
 
+Самоидентификация модели в agent-режиме (§1.5, фикс Д4): флаг `--agent-model
+"<имя/версия модели этой сессии>"` — модель, ВЕДУЩАЯ скилл (агент, вызывающий этот
+CLI), сама указывает, кто она; сохраняется в manifest.json как
+`agent_self_report: {model, self_reported: true}`. Это САМОДЕКЛАРАЦИЯ (не
+API-подтверждение) — помечается как таковая везде, где показывается (report.md,
+manifest.json), в отличие от `model`, приходящей от api-провайдеров (anthropic/
+openai/gigachat), которая — реальный dated-id из ответа API.
+
 Загрузчик сегментов (см. build_segment_index/resolve_segment_path/load_segments,
 добавлено в v1.1 для режима segment_map — spec_synthetic-panel_v1.1_segment_map.md
 §3): panel/segments/**/*.yaml индексируется РЕКУРСИВНО по имени файла (stem), а
@@ -32,6 +46,10 @@ responses_todo.jsonl + AGENT_TASK.md и НЕ вызывает никакую LLM
 panel/segments/<category_slug>/<id>.yaml (см. scripts/segments_export.py).
 Совпадение stem в РАЗНЫХ папках дерева — явная ошибка (exit 1), не молчаливый
 выбор первого найденного пути.
+
+Негативные контроли (§1.4, фикс Д5) — см. докстринг раздела "Негативные контроли"
+ниже для полного контракта (плацебо/пара-ловушка/слепые id, схема manifest.json:
+controls, обратная совместимость study.yaml: controls: off).
 """
 
 from __future__ import annotations
@@ -151,6 +169,267 @@ def load_segments(sids: list[str], skill_root: Path) -> dict[str, dict]:
     return segments
 
 
+# ============================================================================
+# Негативные контроли (spec_synthetic-panel_v1.3.md §1.4, фикс дефекта Д5:
+# "Нет негативных контролей")
+# ============================================================================
+#
+# По умолчанию ВКЛЮЧЕНЫ для ЛЮБОГО study.yaml, включая написанные до v1.3
+# (обратная совместимость: отсутствие поля `controls` эквивалентно `controls: on`).
+# Отключаются явным `controls: off` (или false/no/0/disabled) в study.yaml — с
+# печатаемым предупреждением (см. load_or_init_manifest).
+#
+# Три механизма (контракт для report.py::compute_controls_verdict и для будущего
+# B3-линтера, проверяющего наличие вердикта в отчёте — см. compute_controls_failed_banner/
+# compute_controls_status_line ниже и report.py::render_controls_verdict_detail):
+#   1. ПЛАЦЕБО — references/placebo_bank_ru.yaml, один элемент выбирается
+#      детерминированно от (seed, study.name). Обязан финишировать в нижней трети
+#      рейтинга КАЖДОГО сегмента — иначе controls_failed.
+#   2. ПАРА-ЛОВУШКА — косметическая копия ОДНОГО из РЕАЛЬНЫХ стимулов study.yaml
+#      (см. make_decoy_text: правка чисто типографская — пунктуация/кавычки, смысл
+#      не меняется). Обязана быть "в пределах шума" (report.py::separability_label)
+#      относительно оригинала — иначе controls_failed.
+#   3. СЛЕПЫЕ ID — ВСЕ стимулы (реальные + 2 контрольных) на СТАДИИ GENERATE уходят
+#      под перемешанными от seed метками "BL1".."BLn" (см. build_effective_study);
+#      реальные id восстанавливаются на стадии score/report из
+#      manifest["controls"]["blind_to_real"] (см. unblind_rows). Заполняющему
+#      responses_todo.jsonl слепые id не мешают: задача всегда "ответь на
+#      stimulus_text данной строки", а stimulus_text — это ВСЕГДА реальный текст
+#      (слепой id скрывает только АБСТРАКТНУЮ метку, не содержание, и это не нужно
+#      знать, чтобы выполнить задание).
+#
+# Всё вычисляется и фиксируется в manifest.json ОДИН РАЗ при первой инициализации
+# прогона (load_or_init_manifest) — как respondents_per_segment/samples_per_respondent
+# (см. комментарий в run_report_stage) — и НЕ пересчитывается при повторных вызовах
+# --stage score/--stage report на тот же run_dir: иначе разные вызовы могли бы
+# получить РАЗНОЕ перемешивание слепых меток (например, если seed в config.yaml
+# изменился между вызовами), что сломало бы соответствие с уже сгенерированными
+# responses.jsonl.
+
+CONTROLS_OFF_TOKENS = {"off", "false", "no", "0", "disabled", "нет", "выкл"}
+
+PLACEBO_REAL_ID = "__placebo__"
+DECOY_REAL_ID = "__decoy__"
+
+
+def controls_requested(study: dict) -> bool:
+    """study.yaml: `controls: off` (или false/no/0/disabled/нет/выкл) отключает
+    негативные контроли §1.4. Отсутствие поля (старые study.yaml, до v1.3) ->
+    контроли ВКЛЮЧЕНЫ (обратная совместимость: "по умолчанию ВКЛ" из spec)."""
+    raw = study.get("controls")
+    if raw is None:
+        return True
+    return str(raw).strip().lower() not in CONTROLS_OFF_TOKENS
+
+
+def load_placebo_bank(skill_root: Path) -> list[dict]:
+    """references/placebo_bank_ru.yaml — банк из 3-5 заведомо пустых/слабых
+    "клеймов" (см. сам файл за полным контрактом требований к каждому плацебо)."""
+    path = skill_root / "references" / "placebo_bank_ru.yaml"
+    data = load_yaml(path)
+    placebos = data.get("placebos") or []
+    if len(placebos) < 3:
+        raise ValueError(f"{path}: нужно минимум 3 плацебо-заготовки, найдено {len(placebos)}.")
+    return placebos
+
+
+def pick_placebo(bank: list[dict], seed: int, study_name: str) -> dict:
+    """Ротация плацебо по seed — см. generate.make_rng (тот же детерминированный
+    механизм, что и джиттер персон, просто с другим "namespace" в частях seed)."""
+    rng = generate.make_rng(seed, study_name, "controls_placebo")
+    return rng.choice(bank)
+
+
+def make_decoy_text(original_text: str, rng) -> str:
+    """
+    Косметическая правка текста стимула для пары-ловушки (§1.4): смысл НЕ меняется
+    (правка чисто типографская — пунктуация/кавычки), но текст гарантированно не
+    байт-в-байт идентичен оригиналу (иначе в agent-режиме, где один агент видит
+    ВЕСЬ responses_todo.jsonl разом, дубликат было бы слишком легко механически
+    заметить — см. ограничение ниже). Выбор варианта детерминирован от `rng`
+    (передаётся вызывающим кодом — build_controls_manifest — уже с нужным seed).
+
+    ОГРАНИЧЕНИЕ (честно, не скрывается): в agent-режиме заполняющий
+    responses_todo.jsonl видит ВЕСЬ файл целиком и теоретически может заметить,
+    что два текста почти идентичны, и неявно свести их оценки — слепые id (см.
+    build_effective_study) снижают, но не устраняют этот риск полностью; для
+    API-провайдеров (anthropic/openai) каждый вызов независим (см.
+    generate.generate_responses — цикл per-task), там этого риска нет вовсе.
+    """
+    text = original_text.strip()
+
+    def _toggle_period(t: str) -> str:
+        return t[:-1] if t.endswith((".", "!", "?")) else t + "."
+
+    def _toggle_guillemets(t: str) -> str:
+        if t.startswith("«") and t.endswith("»") and len(t) > 2:
+            return t[1:-1]
+        return f"«{t}»"
+
+    variants = [v for v in (_toggle_period(text), _toggle_guillemets(text)) if v != text]
+    if not variants:
+        variants = [text + " "]  # крайний вырожденный случай — гарантируем отличие
+    return rng.choice(variants)
+
+
+def pick_decoy_source(stimuli: list[dict], seed: int, study_name: str) -> dict:
+    rng = generate.make_rng(seed, study_name, "controls_decoy_source")
+    return rng.choice(stimuli)
+
+
+def build_controls_manifest(study: dict, skill_root: Path, seed: int) -> dict:
+    """
+    Вызывается РОВНО ОДИН РАЗ, при первой инициализации manifest.json прогона (см.
+    load_or_init_manifest) — фиксирует плацебо/ловушку/слепые метки на весь прогон.
+    Возвращает {"enabled": False, "reason": ...}, если study.yaml просит
+    `controls: off` (см. controls_requested).
+    """
+    if not controls_requested(study):
+        return {"enabled": False, "reason": "study.yaml: controls: off"}
+
+    bank = load_placebo_bank(skill_root)
+    placebo_entry = pick_placebo(bank, seed, study["name"])
+    decoy_source = pick_decoy_source(study["stimuli"], seed, study["name"])
+    decoy_rng = generate.make_rng(seed, study["name"], "controls_decoy_text")
+    decoy_text = make_decoy_text(decoy_source["text"], decoy_rng)
+
+    real_ids = [s["id"] for s in study["stimuli"]]
+    clash = {rid for rid in real_ids if rid in (PLACEBO_REAL_ID, DECOY_REAL_ID)}
+    if clash:
+        raise ValueError(
+            f"study.yaml: id стимула(ов) {clash} совпадает со служебным id негативных "
+            f"контролей ({PLACEBO_REAL_ID!r}/{DECOY_REAL_ID!r}) — переименуйте стимул(ы) в study.yaml."
+        )
+    real_ids_in_order = real_ids + [PLACEBO_REAL_ID, DECOY_REAL_ID]
+
+    blind_labels = [f"BL{i + 1}" for i in range(len(real_ids_in_order))]
+    shuffle_rng = generate.make_rng(seed, study["name"], "controls_blind_shuffle")
+    shuffled_positions = list(range(len(real_ids_in_order)))
+    shuffle_rng.shuffle(shuffled_positions)
+    blind_to_real = {
+        blind_labels[k]: real_ids_in_order[shuffled_positions[k]] for k in range(len(real_ids_in_order))
+    }
+    real_to_blind = {real_id: blind_id for blind_id, real_id in blind_to_real.items()}
+
+    return {
+        "enabled": True,
+        "placebo": {
+            "real_id": PLACEBO_REAL_ID,
+            "bank_id": placebo_entry["id"],
+            "text": placebo_entry["text"],
+            "blind_id": real_to_blind[PLACEBO_REAL_ID],
+        },
+        "decoy": {
+            "real_id": DECOY_REAL_ID,
+            "decoy_of": decoy_source["id"],
+            "text": decoy_text,
+            "blind_id": real_to_blind[DECOY_REAL_ID],
+        },
+        "blind_to_real": blind_to_real,
+        "real_to_blind": real_to_blind,
+    }
+
+
+def build_effective_study(study: dict, controls_manifest: dict) -> dict:
+    """
+    Возвращает КОПИЮ study с полем `stimuli`, дополненным (если controls.enabled)
+    плацебо/ловушкой и переведённым на слепые id — используется ТОЛЬКО для стадии
+    generate (build_tasks/write_agent_mode/API-вызовы, см. run_generate_stage).
+    Оригинальный `study` (с реальными id) продолжает использоваться для
+    отчёта/шапки — см. run_report_stage. Если контроли отключены — возвращает
+    study БЕЗ изменений (тот же объект, стимулы не трогаются вовсе).
+    """
+    if not controls_manifest.get("enabled"):
+        return study
+
+    real_to_blind = controls_manifest["real_to_blind"]
+    placebo = controls_manifest["placebo"]
+    decoy = controls_manifest["decoy"]
+
+    all_real_stimuli = list(study["stimuli"]) + [
+        {"id": placebo["real_id"], "text": placebo["text"]},
+        {"id": decoy["real_id"], "text": decoy["text"]},
+    ]
+    blinded_stimuli = [{"id": real_to_blind[s["id"]], "text": s["text"]} for s in all_real_stimuli]
+
+    effective = dict(study)
+    effective["stimuli"] = blinded_stimuli
+    return effective
+
+
+def unblind_rows(rows: list[dict], controls_manifest: Optional[dict]) -> list[dict]:
+    """
+    Возвращает НОВЫЙ список словарей с полем stimulus_id, переведённым из слепой
+    метки обратно в реальный id (controls["blind_to_real"]). Если контроли
+    отключены (`controls_manifest.get("enabled")` falsy) ИЛИ manifest прогона
+    вообще не содержит `controls` (прогон до v1.3, `controls_manifest=None`) — id
+    возвращаются КАК ЕСТЬ (identity-маппинг): ожидаемая обратная совместимость,
+    не ошибка.
+    """
+    if not controls_manifest or not controls_manifest.get("enabled"):
+        return rows
+    blind_to_real = controls_manifest["blind_to_real"]
+    return [
+        {**row, "stimulus_id": blind_to_real.get(row["stimulus_id"], row["stimulus_id"])} for row in rows
+    ]
+
+
+def split_real_and_control_rows(
+    rows: list[dict], real_stimulus_ids: set
+) -> tuple[list[dict], list[dict]]:
+    """После unblind_rows: делит строки на (реальные стимулы study.yaml, служебные
+    строки плацебо/ловушки) по УЖЕ восстановленному real stimulus_id."""
+    real_rows = [r for r in rows if r["stimulus_id"] in real_stimulus_ids]
+    control_rows = [r for r in rows if r["stimulus_id"] not in real_stimulus_ids]
+    return real_rows, control_rows
+
+
+def find_sibling_rankings(
+    run_dir: Path, study_name: str, real_stimulus_ids: set
+) -> dict[str, list[list[str]]]:
+    """
+    §1.3.2 "Kendall-устойчивость рангов между прогонами" — ищет ЗАВЕРШЁННЫЕ (есть
+    pmf_by_segment.csv) прогоны ТОГО ЖЕ study ("<study_name>_*" в том же runs/,
+    кроме самого run_dir), читает их СОБСТВЕННЫЙ manifest.json (свой controls-блок
+    — на случай если seed/конфиг отличались) для разблокировки id, и возвращает
+    {segment_id: [ranking_прогона_1, ranking_прогона_2, ...]} — только по стимулам,
+    реально входящим в ТЕКУЩИЙ real_stimulus_ids (сравнение множеств стимулов,
+    разошедшихся между прогонами study.yaml, пропускается — см. report.py
+    top_n_sets_agree, которое бросает ValueError на несовпадающих множествах;
+    здесь фильтруем ДО этого, чтобы не звать его с заведомо разными множествами).
+    Прогон без manifest.json/pmf_by_segment.csv (например, ещё не досчитан) —
+    молча пропускается, это не ошибка (первый прогон study всегда без "соседей").
+    """
+    runs_root = run_dir.parent
+    result: dict[str, list[list[str]]] = {}
+    if not runs_root.exists():
+        return result
+    for candidate in sorted(runs_root.glob(f"{study_name}_*")):
+        if candidate.resolve() == run_dir.resolve():
+            continue
+        seg_csv = candidate / "pmf_by_segment.csv"
+        manifest_path = candidate / "manifest.json"
+        if not seg_csv.exists() or not manifest_path.exists():
+            continue
+        try:
+            sibling_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            sibling_rows = unblind_rows(report.read_pmf_by_segment(seg_csv), sibling_manifest.get("controls"))
+        except (json.JSONDecodeError, KeyError, ValueError, OSError) as exc:
+            logger.warning("find_sibling_rankings: пропускаю %s (%s)", candidate, exc)
+            continue
+
+        by_segment: dict[str, list[dict]] = {}
+        for r in sibling_rows:
+            if r["stimulus_id"] in real_stimulus_ids:
+                by_segment.setdefault(r["segment"], []).append(r)
+        for segment_id, seg_rows in by_segment.items():
+            if {r["stimulus_id"] for r in seg_rows} != real_stimulus_ids:
+                continue  # набор стимулов разошёлся между прогонами - сравнение бессмысленно
+            ranking = [r["stimulus_id"] for r in sorted(seg_rows, key=lambda r: r["e_value"], reverse=True)]
+            result.setdefault(segment_id, []).append(ranking)
+    return result
+
+
 def validate_study_type(study: dict) -> None:
     study_type = study.get("type")
     if study_type not in ALLOWED_STUDY_TYPES:
@@ -203,7 +482,14 @@ def resolve_run_dir(run_dir_arg: Optional[str], skill_root: Path, study_name: st
     sys.exit(1)
 
 
-def load_or_init_manifest(run_dir: Path, study: dict, config: dict, study_path: Path) -> dict:
+def load_or_init_manifest(run_dir: Path, study: dict, config: dict, study_path: Path, skill_root: Path) -> dict:
+    """
+    Читает manifest.json существующего прогона КАК ЕСТЬ (без пересчёта — критично
+    для controls: слепые метки/плацебо/ловушка фиксируются ОДИН раз здесь, при
+    первой инициализации, см. build_controls_manifest, и НЕ должны пересчитываться
+    при повторных --stage score/report, иначе разойдутся с уже сгенерированным
+    responses.jsonl).
+    """
     manifest_path = run_dir / "manifest.json"
     if manifest_path.exists():
         with manifest_path.open("r", encoding="utf-8") as f:
@@ -211,6 +497,21 @@ def load_or_init_manifest(run_dir: Path, study: dict, config: dict, study_path: 
     samples_per_respondent = int(
         study.get("samples_per_respondent") or config.get("llm", {}).get("samples_per_respondent", 2)
     )
+    seed = int(config.get("report", {}).get("seed", 42))
+    controls_manifest = build_controls_manifest(study, skill_root, seed)
+    if controls_manifest.get("enabled"):
+        print(
+            "-- Негативные контроли включены (§1.4 spec_synthetic-panel_v1.3.md): "
+            f"плацебо [{controls_manifest['placebo']['bank_id']}] + пара-ловушка "
+            f"(косметическая копия стимула {controls_manifest['decoy']['decoy_of']!r}), "
+            "слепые id для генерации (соответствие — manifest.json: controls.blind_to_real)."
+        )
+    else:
+        print(
+            f"-- ВНИМАНИЕ: негативные контроли ОТКЛЮЧЕНЫ "
+            f"({controls_manifest.get('reason', 'controls: off')}). Выводы этого прогона "
+            "не проходят самопроверку §1.4 — используйте с осторожностью."
+        )
     return {
         "study_name": study["name"],
         "study_path": str(study_path),
@@ -221,6 +522,7 @@ def load_or_init_manifest(run_dir: Path, study: dict, config: dict, study_path: 
         "respondents_per_segment": int(study["respondents_per_segment"]),
         "samples_per_respondent": samples_per_respondent,
         "config_snapshot": config,
+        "controls": controls_manifest,
         "created_at": now_iso(),
         "stages": {},
     }
@@ -250,6 +552,13 @@ def run_generate_stage(
     provider_name = config.get("llm", {}).get("provider", "agent")
     responses_path = run_dir / "responses.jsonl"
 
+    # §1.4: стадия generate работает на "эффективном" study — с добавленными
+    # плацебо/ловушкой и переведённым на слепые id (см. build_effective_study).
+    # manifest["controls"] фиксирован в load_or_init_manifest ОДИН раз для всего
+    # прогона, поэтому effective_study одинаков при любом числе вызовов --stage
+    # generate на один и тот же run_dir.
+    effective_study = build_effective_study(study, manifest.get("controls") or {"enabled": False})
+
     if provider_name == "agent" and responses_path.exists():
         n_tasks = sum(1 for line in responses_path.open("r", encoding="utf-8") if line.strip())
         print(f"-- {responses_path.name} уже существует ({n_tasks} строк) — пропускаю генерацию todo.")
@@ -262,7 +571,9 @@ def run_generate_stage(
             temperature_control=False,
         )
     else:
-        outcome = generate.generate_responses(study, config, segments, question, run_dir, str(study_path))
+        outcome = generate.generate_responses(
+            effective_study, config, segments, question, run_dir, str(study_path)
+        )
 
     llm_cfg = config.get("llm", {})
     manifest.setdefault("stages", {})["generate"] = {
@@ -347,6 +658,30 @@ def run_score_stage(run_dir: Path, config: dict, anchor_sets: list[dict[int, str
         ssr_core.cross_check_with_ssr_package(texts, anchor_sets, epsilon, pmf_temperature, pmf_per_response)
     except Exception as exc:  # кросс-чек опционален — никогда не роняем score-стадию из-за него
         logger.debug("Кросс-чек semantic-similarity-rating пропущен из-за ошибки: %s", exc)
+
+    # НОВОЕ в v1.3 (§1.3.2/1.3.4): pmf_by_sample.csv — гранулярность "1 строка = 1
+    # ответ" (segment, stimulus_id, respondent_idx, sample_idx), т.е. САМ
+    # pmf_per_response ДО усреднения по сэмплам, просто экспортированный на диск.
+    # Нужен report.py для сплит-халфа по сэмплам и внутрипрогонной нестабильности
+    # (расхождение "локального лидера" между сэмплами ОДНОГО респондента) —
+    # раньше эта информация терялась на первом же шаге агрегации ниже.
+    sample_csv_path = run_dir / "pmf_by_sample.csv"
+    with sample_csv_path.open("w", encoding="utf-8", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(
+            ["segment", "stimulus_id", "respondent_idx", "sample_idx", "P1", "P2", "P3", "P4", "P5", "E"]
+        )
+        e_per_response = ssr_core.expected_value(pmf_per_response).flatten()
+        sample_export_rows = [
+            (r["segment"], r["stimulus_id"], int(r["respondent_idx"]), int(r["sample_idx"]), pmf_per_response[i], e_per_response[i])
+            for i, r in enumerate(rows)
+        ]
+        for segment, stimulus_id, respondent_idx, sample_idx, pmf_row, e_val in sorted(
+            sample_export_rows, key=lambda x: (x[0], x[1], x[2], x[3])
+        ):
+            writer.writerow(
+                [segment, stimulus_id, respondent_idx, sample_idx, *[f"{p:.6f}" for p in pmf_row], f"{e_val:.6f}"]
+            )
 
     # Уровень "PMF ответа" -> "PMF респондента": усреднение по сэмплам (sample_idx) одного
     # (segment, stimulus_id, respondent_idx).
@@ -440,12 +775,22 @@ def run_score_stage(run_dir: Path, config: dict, anchor_sets: list[dict[int, str
                 ]
             )
 
-    print(f"-- score: готово -> {resp_csv_path.name}, {seg_csv_path.name}")
+    print(f"-- score: готово -> {resp_csv_path.name}, {seg_csv_path.name}, {sample_csv_path.name}")
 
+    # §1.5: config.yaml["embedding"]["validated_stack"] (или, толерантно, верхнеуровневое
+    # config.yaml["validated_stack"]) — метка "победившего" эмбеддера после embedder_ab.py
+    # ([B2], может ещё не существовать на момент этого прогона — тогда просто False,
+    # т.е. mode не станет "validated", даже если провайдер API, см. compute_run_mode).
+    validated_stack = bool(
+        config.get("embedding", {}).get("validated_stack") or config.get("validated_stack")
+    )
+
+    manifest["embedding_model"] = embedding_model  # верхнеуровневый контракт §1.5
     manifest.setdefault("stages", {})["score"] = {
         "embedding_model": embedding_model,
         "embedding_device": emb_cfg.get("device", "cpu"),
         "embedding_prefix": emb_cfg.get("prefix", ""),
+        "embedding_validated_stack": validated_stack,
         "epsilon": epsilon,
         "pmf_temperature": pmf_temperature,
         "min_anchor_sets": min_anchor_sets,
@@ -462,6 +807,74 @@ def run_score_stage(run_dir: Path, config: dict, anchor_sets: list[dict[int, str
 # ============================================================================
 
 
+def compute_run_mode(manifest: dict, controls_verdict: dict) -> str:
+    """
+    §1.5 — mode: "validated" ТОЛЬКО если ВСЕ выполнено разом: (a) провайдер —
+    реальный API (anthropic/openai/gigachat), НЕ agent (agent -> temperature_control
+    =false, ответы не воспроизводимы штатным способом — см. generate.py §5); (b)
+    эмбеддер зафиксирован как "валидированный стек" ([B2]: config.yaml
+    validated_stack — см. run_score_stage, embedding_validated_stack в manifest);
+    (c) негативные контроли §1.4 ВКЛЮЧЕНЫ и ПРОЙДЕНЫ (controls_verdict.applicable
+    и не controls_failed). Иначе — "exploratory". До того как [B2] выставит
+    validated_stack в config.yaml, ЛЮБОЙ прогон честно останется "exploratory" —
+    это отражает реальность (эмбеддер ещё не прошёл гейт §1.2), а не недоработка.
+    """
+    gen_stage = manifest.get("stages", {}).get("generate", {})
+    provider = gen_stage.get("provider", "agent")
+    score_stage = manifest.get("stages", {}).get("score", {})
+    validated_embedding = bool(score_stage.get("embedding_validated_stack"))
+    controls_ok = bool(controls_verdict.get("applicable")) and not controls_verdict.get("controls_failed", True)
+
+    if provider != "agent" and validated_embedding and controls_ok:
+        return "validated"
+    return "exploratory"
+
+
+# Ровно ДВА текста бейджа (report_template.md v1.3, "ЧТО МЕНЯЕТСЯ ДЛЯ REPORT.PY"
+# п.4, [B3]) — не изобретать третий цвет/статус.
+MODE_BADGE_RU = {
+    "validated": "🟢 ВАЛИДИРОВАННЫЙ",
+    "exploratory": "🟡 РАЗВЕДОЧНЫЙ",
+}
+
+
+def compute_controls_status_line(controls_manifest: Optional[dict], controls_verdict: dict) -> str:
+    """
+    {{CONTROLS_STATUS_LINE}} (report_template.md v1.3, п.6, [B3]) — человеческая
+    фраза о результате самоконтроля; используется В ПРЕДЛОЖЕНИИ с точкой в конце
+    ("Самоконтроль прогона: {{CONTROLS_STATUS_LINE}}."), поэтому сама фраза БЕЗ
+    финальной точки. Три канонических варианта + явный четвёртый для прогонов
+    до v1.3 (в шаблоне не описан отдельно, но нужен для обратной совместимости —
+    manifest.json таких прогонов не содержит `controls` вовсе).
+    """
+    if controls_manifest is None:
+        return "контроли недоступны (прогон выполнен до v1.3 — самоконтроль не проводился)"
+    if not controls_manifest.get("enabled"):
+        return "контроли отключены явным флагом study.yaml — самоконтроль не проводился"
+    if controls_verdict.get("controls_failed"):
+        return "прогон НЕ прошёл самоконтроль (см. приложение) — выводы не использовать"
+    return "плацебо и ловушка на своих местах — самоконтроль пройден"
+
+
+def compute_controls_failed_banner(controls_verdict: dict) -> str:
+    """
+    {{CONTROLS_FAILED_BANNER}} (report_template.md v1.3, п.6) — пустая строка при
+    controls_failed=false; короткий абзац при true. Несёт КОНТРАКТ-МАРКЕР для
+    будущего линтера [B3] (cjm_lint.py) — точная фраза "прогон не прошёл
+    самоконтроль" ОБЯЗАНА присутствовать где-то в отчёте при controls_failed=true
+    (см. также report.py::render_controls_verdict_detail — второе место с той же
+    фразой, в "Приложении"); не сокращать/переформулировать этот маркер.
+    """
+    if not controls_verdict.get("controls_failed"):
+        return ""
+    return (
+        "> **прогон не прошёл самоконтроль, выводы не использовать.** Негативные "
+        "контроли §1.4 провалены (плацебо не оказалось в нижней трети рейтинга "
+        "и/или пара-ловушка статистически отличима от оригинала) — см. детализацию "
+        "в разделе «Приложение»."
+    )
+
+
 def run_report_stage(
     run_dir: Path,
     study: dict,
@@ -473,18 +886,70 @@ def run_report_stage(
     skill_root: Path,
 ) -> None:
     seg_csv_path = run_dir / "pmf_by_segment.csv"
-    if not seg_csv_path.exists():
-        print(f"ОШИБКА: {seg_csv_path} не найден — сначала выполните --stage score.", file=sys.stderr)
-        sys.exit(1)
+    resp_csv_path = run_dir / "pmf_by_respondent.csv"
+    for required_path in (seg_csv_path, resp_csv_path):
+        if not required_path.exists():
+            print(f"ОШИБКА: {required_path} не найден — сначала выполните --stage score.", file=sys.stderr)
+            sys.exit(1)
 
-    rows = report.read_pmf_by_segment(seg_csv_path)
+    # §1.4: разблокировка id (identity-маппинг, если controls отключены/прогон до
+    # v1.3 — см. unblind_rows) + разделение на реальные стимулы study.yaml и
+    # служебные строки плацебо/ловушки (см. split_real_and_control_rows).
+    controls_manifest = manifest.get("controls")
+    real_stimulus_ids = {s["id"] for s in study["stimuli"]}
+
+    all_seg_rows = unblind_rows(report.read_pmf_by_segment(seg_csv_path), controls_manifest)
+    all_resp_rows = unblind_rows(report.read_pmf_by_respondent(resp_csv_path), controls_manifest)
+    sample_csv_path = run_dir / "pmf_by_sample.csv"
+    # pmf_by_sample.csv — НОВЫЙ артефакт v1.3 (см. run_score_stage); прогоны,
+    # пересчитанные СТАРЫМ score-кодом (до этой правки) или ещё не пересчитанные,
+    # его не имеют — graceful degradation: пустой список, §1.3.2/1.3.4 для такого
+    # прогона честно покажут "неприменимо"/"недоступны", не упадут.
+    all_sample_rows = (
+        unblind_rows(report.read_pmf_by_sample(sample_csv_path), controls_manifest)
+        if sample_csv_path.exists()
+        else []
+    )
+
+    rows, _control_seg_rows = split_real_and_control_rows(all_seg_rows, real_stimulus_ids)
+    resp_rows, _control_resp_rows = split_real_and_control_rows(all_resp_rows, real_stimulus_ids)
+    sample_rows, _control_sample_rows = split_real_and_control_rows(all_sample_rows, real_stimulus_ids)
+
+    report_cfg = config.get("report", {})
+    bootstrap_iters = int(report_cfg.get("bootstrap_iters", 1000))
+    bootstrap_seed = int(report_cfg.get("seed", 42))
+
+    controls_verdict = report.compute_controls_verdict(
+        all_segment_rows=all_seg_rows,
+        all_resp_rows=all_resp_rows,
+        controls_manifest=controls_manifest or {"enabled": False},
+        segments=list(study["segments"]),
+        bootstrap_iters=bootstrap_iters,
+        seed=bootstrap_seed,
+    )
+    sibling_rankings_by_segment = find_sibling_rankings(run_dir, study["name"], real_stimulus_ids)
+
+    mode = compute_run_mode(manifest, controls_verdict)
+    mode_badge = MODE_BADGE_RU[mode]
+    controls_status_line = compute_controls_status_line(controls_manifest, controls_verdict)
+    controls_failed_banner = compute_controls_failed_banner(controls_verdict)
 
     gen_stage = manifest.get("stages", {}).get("generate", {})
     score_stage = manifest.get("stages", {}).get("score", {})
 
     provider = gen_stage.get("provider", config.get("llm", {}).get("provider", "agent"))
     model_id = gen_stage.get("model")
-    model_display = model_id if model_id else "не зафиксирована (agent-режим, temperature_control=false — см. AGENT_TASK.md)"
+    agent_self_report = manifest.get("agent_self_report")
+    if model_id:
+        model_display = model_id
+    elif agent_self_report and agent_self_report.get("model"):
+        # §1.5 (фикс Д4): самодекларация модели агента, ведущего скилл в agent-режиме
+        # (--agent-model, см. main()) — явно помечена как САМОдекларация, не
+        # API-подтверждение (в отличие от model_id выше — тот приходит от реального
+        # ответа anthropic/openai/gigachat API).
+        model_display = f"{agent_self_report['model']} (самодекларация модели-агента, self_reported=true)"
+    else:
+        model_display = "не зафиксирована (agent-режим, temperature_control=false — см. AGENT_TASK.md)"
 
     n_segments = len(study["segments"])
     n_stimuli = len(study["stimuli"])
@@ -501,6 +966,7 @@ def run_report_stage(
     n_responses_total = score_stage.get(
         "n_responses_scored", n_respondents_total * n_stimuli * samples_per_respondent
     )
+    segment_names_list = ", ".join(segments.get(sid, {}).get("name", sid) for sid in study["segments"])
 
     header_mapping = {
         "STUDY_NAME": study["name"],
@@ -509,14 +975,34 @@ def run_report_stage(
         "PROVIDER_MODE": provider,
         "MODEL_ID": model_display,
         "EMBEDDING_MODEL_ID": score_stage.get("embedding_model", config.get("embedding", {}).get("model", "—")),
-        "N_RESPONDENTS": str(n_respondents_total),
-        "RESPONDENTS_PER_SEGMENT": str(respondents_per_segment),
+        "ANCHORS_VERSION": str(manifest.get("anchors_version", 1)),
+        # v1.3 §1.6: терминология "респонденты" запрещена в клиентском слое —
+        # переименовано в N_PROFILES_TOTAL/PROFILES_PER_SEGMENT (report_template.md
+        # "ЧТО МЕНЯЕТСЯ ДЛЯ REPORT.PY", п.2); то же число, то же вычисление.
+        "N_PROFILES_TOTAL": str(n_respondents_total),
+        "PROFILES_PER_SEGMENT": str(respondents_per_segment),
         "SAMPLES_PER_RESPONDENT": str(samples_per_respondent),
         "N_RESPONSES": str(n_responses_total),
         "N_SEGMENTS": str(n_segments),
         "N_STIMULI": str(n_stimuli),
+        "SEGMENT_NAMES_LIST": segment_names_list,
+        "SCALE_NAME_RU": scale_name_ru,
+        "SCALE_ID": scale_id,
         "MANIFEST_FILENAME": "manifest.json",
         "MANIFEST_PATH": "manifest.json",
+        "MODE": mode,
+        "MODE_BADGE": mode_badge,
+        "CONTROLS_STATUS_LINE": controls_status_line,
+        "CONTROLS_FAILED_BANNER": controls_failed_banner,
+        # report_template.md (v1.3) содержит иллюстративный абзац "Пример
+        # `{{ASCII_BAR}}` (не обязателен побуквенно...)" СРАЗУ ПОСЛЕ
+        # <!-- APPENDIX_TABLE_END --> (вне маркера, а не внутри него, как было в
+        # v1.2 - похоже на редакторский пропуск при переносе секции в
+        # "Приложение", см. итоговое сообщение агента). Раз он живой текст (не в
+        # HTML-комментарии) - подставляем реальный пример, чтобы не оставлять
+        # {{ASCII_BAR}} видимым в клиентском report.md; не трогаем сам файл
+        # шаблона (не наша зона).
+        "ASCII_BAR": "▁▂▇▄▁",
     }
 
     template_path = skill_root / "references" / "report_template.md"
@@ -527,18 +1013,38 @@ def run_report_stage(
         template_path=template_path,
         disclaimers_path=disclaimers_path,
         rows=rows,
+        resp_rows=resp_rows,
+        sample_rows=sample_rows,
         study=study,
         segments=segments,
         scale_name_ru=scale_name_ru,
         scale_id=scale_id,
         header_mapping=header_mapping,
+        bootstrap_iters=bootstrap_iters,
+        bootstrap_seed=bootstrap_seed,
+        controls_verdict=controls_verdict,
+        sibling_rankings_by_segment=sibling_rankings_by_segment,
     )
 
+    # §1.5: manifest.json ВСЕГДА содержит (к концу --stage report) mode/model —
+    # верхнеуровневые контрактные поля (embedding_model/anchors_version уже
+    # проставлены раньше — см. run_score_stage/main()).
+    manifest["mode"] = mode
+    manifest["model"] = model_display
+    manifest["controls_verdict"] = controls_verdict
     manifest.setdefault("stages", {})["report"] = {
         "report_path": str(report_path),
+        "mode": mode,
         "completed_at": now_iso(),
     }
-    print(f"-- report: {report_path}")
+    print(f"-- report: {report_path} (mode={mode})")
+    if controls_verdict.get("controls_failed"):
+        print(
+            "== ВНИМАНИЕ: негативные контроли §1.4 НЕ пройдены (controls_failed=true) — "
+            "отчёт собран, но помечен красной плашкой; выводы использовать нельзя без "
+            "разбора причины провала (см. report.md, раздел 1). ==",
+            file=sys.stderr,
+        )
 
 
 # ============================================================================
@@ -563,6 +1069,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=None,
         help="Override study.yaml: respondents_per_segment для ЭТОГО прогона (не меняет файл study.yaml "
         "на диске; фактическое значение фиксируется в manifest.json — удобно для быстрых smoke-демо).",
+    )
+    p.add_argument(
+        "--agent-model",
+        default=None,
+        help="Самоидентификация модели-агента в agent-режиме (§1.5 spec_synthetic-panel_v1.3.md, "
+        "фикс Д4): передайте имя/версию модели ТЕКУЩЕЙ сессии, ведущей скилл (например "
+        "'claude-sonnet-5'). Сохраняется в manifest.json как agent_self_report "
+        "{model, self_reported: true} — это САМОдекларация, а не API-подтверждение; можно "
+        "передавать на любой стадии, перезаписывает предыдущее значение этого же прогона.",
     )
     return p
 
@@ -614,7 +1129,23 @@ def main() -> None:
 
     run_dir = resolve_run_dir(args.run_dir, skill_root, study["name"], args.stage)
     run_dir.mkdir(parents=True, exist_ok=True)
-    manifest = load_or_init_manifest(run_dir, study, config, study_path)
+    manifest = load_or_init_manifest(run_dir, study, config, study_path, skill_root)
+
+    # §1.5: anchors_version — верхнеуровневый контрактный manifest-field, проставляется
+    # на КАЖДОМ вызове (дёшево, читаем то, что уже загрузили выше). Толерантно к месту,
+    # где [B2] хранит версию в anchors_ru.yaml: meta.anchors_version (новое имя),
+    # meta.version (старое имя, spec v1/v1.2) — если ни того ни другого нет, честный
+    # дефолт 1 (файл до версионирования).
+    anchors_meta = anchors_raw.get("meta", {}) or {}
+    manifest["anchors_version"] = anchors_meta.get("anchors_version", anchors_meta.get("version", 1))
+
+    if args.agent_model:
+        manifest["agent_self_report"] = {
+            "model": args.agent_model,
+            "self_reported": True,
+            "recorded_at": now_iso(),
+        }
+        print(f"-- Самоидентификация модели-агента записана в manifest.json: {args.agent_model!r}")
 
     if args.stage in ("all", "generate"):
         outcome = run_generate_stage(run_dir, study, config, segments, question, study_path, manifest)

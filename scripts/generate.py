@@ -1,7 +1,8 @@
 """
 generate.py — мультипровайдерная генерация свободных ответов синтетических респондентов.
 
-Реализует spec_synthetic-panel_v1.md §5. Точка входа для внешних вызовов (run_study.py) —
+Реализует spec_synthetic-panel_v1.md §5 + spec_synthetic-panel_v1.3.md §1.1 (карточка
+персоны, фикс дефекта Д1). Точка входа для внешних вызовов (run_study.py) —
 функция generate_responses(). Остальное — вспомогательные строительные блоки.
 
 Провайдеры (config.yaml: llm.provider):
@@ -13,12 +14,41 @@ generate.py — мультипровайдерная генерация своб
                  (BaseProvider.generate), сам HTTP-обмен не реализован (нужен корпоративный
                  контур/сертификат, см. research/2026-07-08/06_tech_implementation.md, В.3).
 
-Промпт (§5, СТРОГО): системная часть описывает персону и требует свободный текст от
-первого лица без chain-of-thought; задание — стимул + question ИЗ ШКАЛЫ anchors_ru.yaml
-(ТОЛЬКО формулировка вопроса). Якорные фразы (anchor_sets/phrases) НИКОГДА не передаются
+Промпт (§5, СТРОГО): системная часть описывает персону КАРТОЧКОЙ (build_persona_card,
+контракт формата — см. ниже) и требует свободный текст от первого лица без
+chain-of-thought; задание — стимул + question ИЗ ШКАЛЫ anchors_ru.yaml (ТОЛЬКО
+формулировка вопроса). Якорные фразы (anchor_sets/phrases) НИКОГДА не передаются
 в build_system_prompt/build_task_prompt — этот модуль их даже не импортирует из ssr_core,
 получая `question` уже готовой строкой от вызывающего кода (run_study.py), что делает
 утечку шкалы структурно исключённой (нечем утечь — тексту анкоров сюда просто неоткуда взяться).
+
+КАРТОЧКА ПЕРСОНЫ (§1.1 v1.3, контракт формата — фикс Д1: раньше в промпт попадали только
+возраст/город/доход/первый формат/одна фраза языка, а description/мотивация/барьер/оси/
+поводы/каналы сегмента полностью игнорировались). build_persona_card(profile, segment)
+собирает СТРУКТУРИРОВАННУЮ карточку из ВСЕХ полей сегмента, какие реально присутствуют в
+его YAML, с МЯГКОЙ ДЕГРАДАЦИЕЙ: поле отсутствует -> соответствующая строка карточки просто
+не пишется, функция никогда не падает на неполном/черновом segment YAML. Строки карточки
+(в этом порядке; любая, кроме первой, может отсутствовать):
+    1. "Профиль: ..."     — джиттер: пол (если задан persona_jitter.gender — см. jitter_persona),
+                            возраст, город, доход + имя сегмента. ВСЕГДА присутствует.
+    2. "Кто это: ..."     — сжатое (см. _compress_text) segment.description.
+    3. "Главное: ..."     — мотивация/барьер, ТОЛЬКО если сегмент явно задаёт строковые поля
+                            segment['motivation']/segment['barrier'] (schema-задел на будущее:
+                            ни один panel/segments/**/*.yaml на 2026-07-18 их не задаёт — этот
+                            смысл обычно уже есть прозой в description выше; если задано только
+                            одно из двух полей — пишется только оно).
+    4. "Особенности: ..." — все пары segment.axes ("читаемое имя оси — значение"; имя оси
+                            переводится словарём _AXIS_LABEL_RU, см. ниже).
+    5. "Поведение: ..."   — segment.behavior: forматы/поводы/каналы (списки, через "; ") +
+                            price_sensitivity (сжато). Часть, которой нет в YAML, просто не
+                            добавляется; если нет ни одной части — строки нет вовсе.
+    6. "Опыт категории: ..." — сжатый (нейтральный по тону) segment.brands_context.
+    7. "Говорит в духе: ..."  — 1-2 фразы из segment.language (profile['language_flavors'],
+                            выбраны детерминированно от seed в jitter_persona).
+Признаки согласованы: карточка — ДЕТЕРМИНИРОВАННАЯ сборка из ОДНОГО и того же
+джиттер-профиля (jitter_persona) и одного и того же segment-словаря — один респондент
+получает ОДНУ карточку, переиспользуемую для ВСЕХ его стимулов/сэмплов (см. build_tasks) —
+связный человек, а не независимо подброшенные кости по каждому полю.
 
 Персона-джиттер: детерминирован от (config.report.seed, segment_id, respondent_idx) —
 см. jitter_persona(). Один и тот же прогон (тот же seed) с тем же study.yaml всегда даёт
@@ -27,7 +57,10 @@ generate.py — мультипровайдерная генерация своб
 Схема responses_todo.jsonl (agent-режим, ДО заполнения) — одна строка JSON на задачу:
     rid            str   уникальный id ответа, "<segment>__<stimulus_id>__<respondent_idx>__<sample_idx>"
     segment        str   id сегмента (как в panel/segments/<id>.yaml)
-    persona        str   рендеренная одна строка описания персоны (RU), для контекста агенту
+    persona        str   ПОЛНАЯ карточка персоны (build_persona_card) — МНОГОСТРОЧНАЯ строка
+                         (JSONL это допускает: одна строка ФАЙЛА = один JSON-объект; JSON
+                         внутри объекта хранит переводы строк как \n, это не нарушает формат).
+                         Хранится целиком для аудита (spec §1.1).
     stimulus_id    str
     stimulus_text  str
     question       str   ТОЛЬКО формулировка вопроса шкалы, без якорных фраз
@@ -53,6 +86,7 @@ import json
 import logging
 import os
 import random
+import re
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -82,11 +116,19 @@ def jitter_persona(segment: dict, segment_id: str, respondent_idx: int, seed: in
     """
     Детерминированный от seed джиттер конкретного респондента внутри сегмента.
 
-    Читает segment['persona_jitter'] = {age: [min, max], income_level: [...], city_tier: [...]}
+    Читает segment['persona_jitter'] = {age: [min, max], income_level: [...],
+    city_tier: [...], gender: [...] (опционально — spec_synthetic-panel_v1.2.md,
+    Модуль 2 п.1; НИ ОДИН panel/segments/**/*.yaml на 2026-07-18 это поле не задаёт)}
     (схема сегмента — spec §9, владелец файлов — сборщик панели [B3]). Один и тот же
     (seed, segment_id, respondent_idx) всегда даёт один и тот же профиль — воспроизводимость
     прогона (§0.5). Разумные дефолты подставляются, если сегмент не задаёт часть полей
     (не должно падать на неполном/черновом segment YAML).
+
+    Порядок обращений к rng ВАЖЕН для обратной совместимости: age -> income -> city
+    -> (gender, ТОЛЬКО если поле задано) -> language_flavors. Поскольку gender
+    сегодня отсутствует у ВСЕХ существующих сегментов, эта ветка не потребляет rng
+    вообще ни для одного из них — age/income/city любого существующего сегмента
+    остаются побитово такими же, как до появления gender/language_flavors.
     """
     jitter = segment.get("persona_jitter") or {}
     rng = make_rng(seed, segment_id, str(respondent_idx))
@@ -103,19 +145,27 @@ def jitter_persona(segment: dict, segment_id: str, respondent_idx: int, seed: in
     city_options = jitter.get("city_tier") or ["крупный город"]
     city = rng.choice(city_options)
 
+    gender_options = jitter.get("gender")
+    gender = rng.choice(gender_options) if gender_options else None
+
     language_bank = segment.get("language") or []
-    language_flavor = rng.choice(language_bank) if language_bank else ""
+    # 1-2 фразы (карточка персоны §1.1), без повторов, если банк даёт 2+ разных
+    # варианта. rng.sample идёт ПОСЛЕДНИМ обращением к rng в этой функции — не
+    # влияет на воспроизводимость age/income/city/gender выше.
+    n_flavors = min(2, len(language_bank))
+    language_flavors = rng.sample(language_bank, n_flavors) if n_flavors else []
 
     return {
         "age": age,
         "income_level": income,
         "city_tier": city,
-        "language_flavor": language_flavor,
+        "gender": gender,
+        "language_flavors": language_flavors,
         "segment_name": segment.get("name", segment_id),
     }
 
 
-# Переводы токенов persona_jitter (income_level/city_tier) в естественный русский.
+# Переводы токенов persona_jitter (income_level/city_tier/gender) в естественный русский.
 # Схема сегментов (panel/segments/*.yaml, владелец [B3]) использует английские
 # snake_case-токены как МАШИННЫЕ идентификаторы диапазона для детерминированного
 # выбора в jitter_persona() — это нормально для данных. Но эти же значения идут
@@ -123,7 +173,7 @@ def jitter_persona(segment: dict, segment_id: str, respondent_idx: int, seed: in
 # человекочитаемый русский текст (spec_synthetic-panel_v1.md §0.4: "Всё
 # русскоязычное: якоря, промпты, сегменты, отчёты"; без перевода "mid_city"/
 # "average" утекали дословно в русский системный промпт — см. docs/review_v1.md,
-# находка №2). Словарь закрытый и сверен со ВСЕМИ 7 файлами panel/segments/*.yaml
+# находка №2). Словари закрытые и сверены со ВСЕМИ panel/segments/**/*.yaml
 # на момент написания; неизвестный токен не роняет прогон — заменяется как есть
 # с предупреждением в лог, чтобы новый сегмент не проходил тихо мимо перевода.
 _INCOME_LEVEL_RU = {
@@ -137,6 +187,14 @@ _CITY_TIER_RU = {
     "big_city": "крупный город",
     "mid_city": "город среднего размера",
     "small_town_rural": "малый город или село",
+}
+_GENDER_RU = {
+    "ж": "женщина",
+    "м": "мужчина",
+    "жен": "женщина",
+    "муж": "мужчина",
+    "женский": "женщина",
+    "мужской": "мужчина",
 }
 
 
@@ -153,44 +211,213 @@ def _translate_jitter_token(token: str, mapping: dict[str, str], field_name: str
     return token
 
 
-def render_persona_line(profile: dict, segment: dict) -> str:
-    """Компактная одна строка описания персоны — идёт и в промпт, и в поле `persona` JSONL."""
-    formats = (segment.get("behavior") or {}).get("formats")
-    format_hint = ""
-    if isinstance(formats, list) and formats:
-        format_hint = f", формат: {formats[0]}"
+# Переводы КЛЮЧЕЙ segment['axes'] (факторные оси) в читаемую русскую фразу — часть
+# карточки персоны (§1.1 v1.3, строка 4 "Особенности"). Ключи осей — snake_case
+# английские идентификаторы (см. panel/segments/**/*.yaml), а вот ЗНАЧЕНИЯ осей уже
+# по-русски словами ("высокая"/"средняя"/...) прямо в схеме сегмента. Без перевода
+# ИМЕНИ оси в промпт утекал бы английский идентификатор — ровно тот же класс
+# проблемы, что и с income_level/city_tier токенами выше (см. docs/review_v1.md,
+# находка №2). Словарь сверен со ВСЕМИ panel/segments/**/*.yaml на 2026-07-18
+# (22 уникальных ключа на момент написания); НЕИЗВЕСТНЫЙ ключ (новый сегмент завёл
+# новую ось) не роняет прогон — _axis_label() гуманизирует его (замена "_" на
+# пробел) и пишет warning в лог, чтобы перевод могли добавить при следующей правке.
+_AXIS_LABEL_RU = {
+    "coffee_expertise": "экспертность в кофе",
+    "coffee_harm_reduction": "восприятие вреда от кофе",
+    "dessert_treat": "восприятие кофе как десерта",
+    "effect_energy": "важность бодрящего эффекта",
+    "flavor_experimentation": "готовность экспериментировать со вкусами",
+    "hair_loss_anxiety": "тревога из-за выпадения волос",
+    "ingredient_literacy": "насколько разбирается в составе средств",
+    "irritation_sensitivity": "чувствительность кожи к раздражению",
+    "mood_atmosphere": "важность настроения и атмосферы",
+    "naturalness": "важность натуральности",
+    "patience_horizon": "готовность ждать результат",
+    "postacne_focus": "фокус на постакне и ровном тоне кожи",
+    "premium_quality": "тяга к премиальности",
+    "price_sensitivity": "чувствительность к цене",
+    "quick_result_expectation": "ожидание быстрого результата",
+    "routine_readiness": "готовность соблюдать курс/рутину",
+    "self_treatment_vs_doctor": "склонность лечиться самостоятельно, а не у врача",
+    "shame_stigma": "стыд и стигма темы",
+    "soc_pressure": "социальное давление",
+    "topic_openness": "открытость обсуждать тему",
+    "treatment_distrust": "недоверие к средствам лечения",
+    "trust_in_active_ingredients": "доверие к действующим веществам",
+}
+
+
+def _axis_label(axis_key: str) -> str:
+    if axis_key in _AXIS_LABEL_RU:
+        return _AXIS_LABEL_RU[axis_key]
+    logger.warning(
+        "generate.py: ось %r отсутствует в словаре _AXIS_LABEL_RU — используется "
+        "гуманизированный fallback (замена '_' на пробел). Если это не опечатка, "
+        "добавьте перевод оси в generate.py.",
+        axis_key,
+    )
+    return axis_key.replace("_", " ")
+
+
+def _compress_text(text: str, max_sentences: int = 2, max_chars: int = 300) -> str:
+    """
+    Сжимает длинный абзац YAML-поля (description/brands_context/price_sensitivity
+    и т.п.) для карточки персоны, которая идёт в ПРОМПТ — не путать с
+    report.py::truncate_label (та функция обрезает текст СТИМУЛА для табличной
+    ячейки отчёта, другой модуль и другое назначение).
+
+    Берёт первые предложения (граница — ".", "!", "?" + пробел), ДОБАВЛЯЯ их по
+    одному, пока не набрано max_sentences ИЛИ следующее предложение не превысило
+    бы max_chars (в этом случае просто останавливается, не обрезая предложение
+    на середине слова) — всегда сохраняется минимум первое предложение целиком.
+    Если даже ОДНО первое предложение длиннее max_chars — обрезает по границе
+    слова (не байт-в-байт по символам, чтобы не отдавать оборванный огрызок
+    слова вроде "не стол…") и добавляет "…". Пустой/отсутствующий текст -> пустая
+    строка (вызывающий код такую строку в карточку не добавляет, см.
+    build_persona_card).
+    """
+    collapsed = " ".join(text.split())
+    if not collapsed:
+        return ""
+    sentences = [s for s in re.split(r"(?<=[.!?])\s+", collapsed) if s] or [collapsed]
+
+    kept = sentences[0]
+    for extra in sentences[1:max_sentences]:
+        candidate = f"{kept} {extra}"
+        if len(candidate) > max_chars:
+            break
+        kept = candidate
+
+    if len(kept) > max_chars:
+        cut = kept[: max_chars - 1]
+        last_space = cut.rfind(" ")
+        if last_space > max_chars // 2:  # не обрезать до огрызка в пару символов
+            cut = cut[:last_space]
+        if cut.count('"') % 2 == 1:
+            # оборванная НЕЗАКРЫТАЯ кавычка внутри вырезанного текста (например,
+            # обрезали ровно на открывающей «"маленькой радости"») — обрубаем от
+            # неё же, чтобы не оставлять висящую кавычку без пары в середине фразы.
+            cut = cut[: cut.rfind('"')]
+        kept = cut.rstrip(' ,;:—-"') + "…"
+    return kept
+
+
+def _as_clause(text: str) -> str:
+    """
+    Готовит компрессированный фрагмент (_compress_text) для встраивания как
+    ВНУТРЕННЕЙ клаузы строки карточки, которая сама получит один финальный "."
+    в конце (см. "Главное"/"Поведение" ниже) — снимает конечную точку/!/?, чтобы
+    не получалось "...врача.; барьер" или "...компонентах.." (двойная пунктуация).
+    Многоточие "…" (уже signal сжатия) НЕ снимается — двоеточие/точка-с-запятой
+    в исходном тексте тоже не трогаются, только терминальные .!? одним символом.
+    """
+    return text[:-1] if text and text[-1] in ".!?" else text
+
+
+def build_persona_card(profile: dict, segment: dict) -> str:
+    """
+    Структурированная карточка смоделированного профиля (§1.1 v1.3, фикс Д1) —
+    контракт формата целиком описан в докстринге МОДУЛЯ выше ("КАРТОЧКА ПЕРСОНЫ").
+    Мягкая деградация: поле сегмента отсутствует -> соответствующая строка карточки
+    просто не пишется, функция никогда не бросает исключение из-за неполного YAML.
+
+    Результат идёт И в build_system_prompt (ниже), И в поле `persona` JSONL (для
+    аудита, целиком, см. build_tasks/write_agent_mode) — это ОДИН и тот же текст.
+    """
+    lines: list[str] = []
+
     city_ru = _translate_jitter_token(profile["city_tier"], _CITY_TIER_RU, "city_tier")
     income_ru = _translate_jitter_token(profile["income_level"], _INCOME_LEVEL_RU, "income_level")
-    return (
-        f"{profile['age']} лет, {city_ru}, {income_ru}, "
-        f"сегмент «{profile['segment_name']}»{format_hint}"
+    gender_token = profile.get("gender")
+    gender_prefix = (
+        f"{_translate_jitter_token(gender_token, _GENDER_RU, 'gender')}, " if gender_token else ""
     )
+    segment_name = segment.get("name") or profile.get("segment_name") or ""
+    lines.append(
+        f"Профиль: {gender_prefix}{profile['age']} лет, {city_ru}, {income_ru}, "
+        f"сегмент «{segment_name}»."
+    )
+
+    description = (segment.get("description") or "").strip()
+    if description:
+        lines.append(f"Кто это: {_compress_text(description, max_sentences=2, max_chars=320)}")
+
+    # Мотивация/барьер — schema-задел на будущее (см. докстринг модуля, строка 3);
+    # мягкая деградация означает, что СЕЙЧАС эта строка не пишется ни для одного
+    # существующего сегмента (ни один panel/segments/**/*.yaml их не задаёт) —
+    # это ожидаемо, а не баг: смысл обычно уже есть прозой в description выше.
+    motivation = (segment.get("motivation") or "").strip()
+    barrier = (segment.get("barrier") or "").strip()
+    if motivation or barrier:
+        parts = []
+        if motivation:
+            parts.append(f"мотивация — {_as_clause(_compress_text(motivation, max_sentences=1, max_chars=200))}")
+        if barrier:
+            parts.append(f"барьер — {_as_clause(_compress_text(barrier, max_sentences=1, max_chars=200))}")
+        lines.append("Главное: " + "; ".join(parts) + ".")
+
+    axes = segment.get("axes")
+    if isinstance(axes, dict) and axes:
+        axis_phrases = [f"{_axis_label(str(k))} — {v}" for k, v in axes.items()]
+        lines.append("Особенности: " + "; ".join(axis_phrases) + ".")
+
+    behavior = segment.get("behavior") or {}
+    behavior_parts = []
+    formats = behavior.get("formats")
+    if isinstance(formats, list) and formats:
+        behavior_parts.append("форматы — " + "; ".join(str(x) for x in formats))
+    occasions = behavior.get("occasions")
+    if isinstance(occasions, list) and occasions:
+        behavior_parts.append("повод — " + "; ".join(str(x) for x in occasions))
+    channels = behavior.get("channels")
+    if isinstance(channels, list) and channels:
+        behavior_parts.append("каналы — " + "; ".join(str(x) for x in channels))
+    price_sensitivity = (behavior.get("price_sensitivity") or "").strip()
+    if price_sensitivity:
+        behavior_parts.append(
+            "к цене — " + _as_clause(_compress_text(price_sensitivity, max_sentences=1, max_chars=200))
+        )
+    if behavior_parts:
+        lines.append("Поведение: " + "; ".join(behavior_parts) + ".")
+
+    brands_context = (segment.get("brands_context") or "").strip()
+    if brands_context:
+        lines.append(
+            "Опыт категории: " + _compress_text(brands_context, max_sentences=2, max_chars=260)
+        )
+
+    language_flavors = profile.get("language_flavors") or []
+    if language_flavors:
+        quoted = "; ".join(f"«{p}»" for p in language_flavors)
+        lines.append(f"Говорит в духе: {quoted}")
+
+    return "\n".join(lines)
 
 
 # ============================================================================
-# Промпт-шаблон (§5) — системная часть и задание
+# Промпт-шаблон (§5, §1.1) — системная часть и задание
 # ============================================================================
 
 
 def build_system_prompt(profile: dict, segment: dict) -> str:
     """
-    Системная часть промпта респондента (§5). НЕ содержит и не может содержать якорные
-    фразы шкалы — эта функция вообще не получает anchor_sets на вход.
+    Системная часть промпта респондента (§5, §1.1). НЕ содержит и не может
+    содержать якорные фразы шкалы — эта функция вообще не получает anchor_sets на
+    вход, а карточка персоны (build_persona_card) строится только из полей
+    сегмента и джиттер-профиля, которым тоже неоткуда взять анкоры.
     """
-    persona_line = render_persona_line(profile, segment)
-    language_hint = ""
-    if profile.get("language_flavor"):
-        language_hint = (
-            f" Иногда, если уместно, используй характерные для себя обороты речи, "
-            f"например что-то в духе: «{profile['language_flavor']}»."
-        )
+    card = build_persona_card(profile, segment)
     return (
-        f"Ты отвечаешь как живой человек: {persona_line}. "
-        "Отвечай от первого лица, разговорно, 2-5 предложений. "
+        "Ты отвечаешь как живой человек. Вот твой профиль:\n"
+        f"{card}\n\n"
+        "Это согласованное целое, один конкретный человек, а не список случайных "
+        "фактов — отвечай, оставаясь им. Отвечай от первого лица, разговорно, 2-5 "
+        "предложений. "
         "Не упоминай, что ты ИИ, языковая модель или ассистент. "
         "Не рассуждай пошагово и не объясняй ход мыслей — сразу дай живую, естественную "
-        "реакцию, как будто тебя спросили об этом в короткой беседе."
-        f"{language_hint}"
+        "реакцию, как будто тебя спросили об этом в короткой беседе. "
+        "Если в профиле есть строка «Говорит в духе» — иногда, где уместно, можно "
+        "оттолкнуться от интонации этих фраз, но не копируй их дословно в каждом ответе."
     )
 
 
@@ -241,7 +468,7 @@ def build_tasks(
         segment = segments[segment_id]
         for respondent_idx in range(1, respondents_per_segment + 1):
             profile = jitter_persona(segment, segment_id, respondent_idx, seed)
-            persona_line = render_persona_line(profile, segment)
+            persona_card = build_persona_card(profile, segment)
             system_prompt = build_system_prompt(profile, segment)
             for stimulus in study["stimuli"]:
                 for sample_idx in range(1, samples_per_respondent + 1):
@@ -250,7 +477,7 @@ def build_tasks(
                         ResponseTask(
                             rid=rid,
                             segment=segment_id,
-                            persona=persona_line,
+                            persona=persona_card,
                             stimulus_id=stimulus["id"],
                             stimulus_text=stimulus["text"],
                             question=question,
@@ -478,8 +705,9 @@ AGENT_TASK_TEMPLATE = """\
 
 ## Как отвечать за персону (обязательные правила)
 
-- Роль: ты — персона, описанная в поле `persona` (возраст/город/доход/сегмент). Отвечай от
-  ПЕРВОГО ЛИЦА, разговорно, 2-5 предложений.
+- Роль: ты — персона, описанная в поле `persona` (структурированная карточка: демография,
+  описание сегмента, особенности/оси, поведение, характерные фразы — см. spec §1.1). Отвечай
+  от ПЕРВОГО ЛИЦА, разговорно, 2-5 предложений, оставаясь ЭТИМ конкретным человеком целиком.
 - НЕ упоминай, что ты ИИ или языковая модель.
 - НЕ рассуждай пошагово, не объясняй логику вывода — сразу живая реакция, как в короткой беседе.
 - НЕ называй числовую оценку и НЕ используй фразы вида «я бы поставил X из 5» — только

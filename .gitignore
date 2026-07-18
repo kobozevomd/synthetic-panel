@@ -24,3 +24,8 @@ __pycache__/
 # выше, но фиксирует зону явно на случай будущих правок общего правила
 /runs/cjm_azelik*
 /runs/comp_azelik*
+
+# Клиентские данные (Biotinal) — только локально
+/studies/biotinal*
+/runs/biotinal*
+/panel/segments/biotinal*/

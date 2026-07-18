@@ -241,6 +241,107 @@ class TestBootstrapStability(unittest.TestCase):
 
 
 # ----------------------------------------------------------------------------
+# Парный бутстреп разностей (spec_synthetic-panel_v1.3.md §1.3, фикс Д3) —
+# ФИКСТУРЫ С ИЗВЕСТНЫМ ОТВЕТОМ (обязательное требование задания B1 для этой
+# итерации): каждый сценарий сконструирован так, что правильный P(A>B) известен
+# заранее математически (не "на глаз"), а не просто правдоподобен.
+# ----------------------------------------------------------------------------
+
+
+class TestJointPairedBootstrap(unittest.TestCase):
+    def test_clear_paired_gap_gives_high_win_probability(self):
+        """A = B + 1.0 + общий шум (тот же респондент отвечает на оба стимула) ->
+        A обязана выигрывать почти во всех бутстреп-итерациях."""
+        rng = np.random.default_rng(0)
+        shared_noise = rng.normal(0, 0.3, size=20)
+        a = 4.0 + shared_noise
+        b = 3.0 + shared_noise
+        e_matrix = np.stack([a, b], axis=1)
+        boot = ssr_core.joint_paired_bootstrap_means(e_matrix, n_iters=3000, seed=42)
+        p_a_gt_b = ssr_core.pairwise_win_probability(boot, 0, 1)
+        self.assertGreater(p_a_gt_b, 0.95)
+
+    def test_identical_columns_give_exactly_zero_strict_win_probability(self):
+        """Точно ОДИНАКОВЫЕ данные для A и B (тот же массив дважды) -> в КАЖДОЙ
+        бутстреп-итерации резэмплированное среднее A ТОЧНО равно среднему B (одни
+        и те же индексы применяются к обеим "колонкам") -> P(A>B) строго = 0.0
+        (строгое ">"), это проверяемо аналитически, не просто "около 0.5"."""
+        values = np.array([1.2, 3.4, 2.1, 5.5, 0.8, 4.4, 2.9])
+        e_matrix = np.stack([values, values], axis=1)
+        boot = ssr_core.joint_paired_bootstrap_means(e_matrix, n_iters=500, seed=1)
+        self.assertEqual(ssr_core.pairwise_win_probability(boot, 0, 1), 0.0)
+        self.assertEqual(ssr_core.pairwise_win_probability(boot, 1, 0), 0.0)
+
+    def test_symmetric_construction_gives_probability_near_half(self):
+        """
+        c = [1..10], d = [10..1] (d[i] = 11 - c[i] поточечно) -> mean(c) == mean(d)
+        == 5.5 РОВНО, и для ЛЮБОГО ресэмпла индексов mean(d_resampled) = 11 -
+        mean(c_resampled) (точное тождество, не приближение) -> распределение
+        mean(c_resampled) симметрично вокруг 5.5, значит P(c_resampled > d_resampled)
+        = P(c_resampled_mean > 5.5) обязано быть ~0.5 по симметрии, а не "примерно
+        как повезёт" — известный ответ, не просто правдоподобный.
+        """
+        c = np.array([1, 2, 3, 4, 5, 6, 7, 8, 9, 10], dtype=np.float64)
+        d = np.array([10, 9, 8, 7, 6, 5, 4, 3, 2, 1], dtype=np.float64)
+        e_matrix = np.stack([c, d], axis=1)
+        boot = ssr_core.joint_paired_bootstrap_means(e_matrix, n_iters=20000, seed=123)
+        p = ssr_core.pairwise_win_probability(boot, 0, 1)
+        self.assertGreater(p, 0.4)
+        self.assertLess(p, 0.6)
+
+    def test_place_probabilities_sum_to_one_and_favor_clear_winner(self):
+        rng = np.random.default_rng(2)
+        n_resp = 15
+        a = 4.5 + rng.normal(0, 0.2, size=n_resp)
+        b = 3.0 + rng.normal(0, 0.2, size=n_resp)
+        c = np.full(n_resp, 2.0)
+        e_matrix = np.stack([a, b, c], axis=1)
+        boot = ssr_core.joint_paired_bootstrap_means(e_matrix, n_iters=2000, seed=7)
+        probs = ssr_core.place_probabilities(boot)
+        self.assertAlmostEqual(float(probs.sum()), 1.0, places=9)
+        self.assertGreater(probs[0], 0.95)  # "a" почти всегда 1-е место
+        self.assertEqual(int(np.argmax(probs)), 0)
+
+    def test_determinism_same_seed_gives_identical_result(self):
+        rng = np.random.default_rng(3)
+        e_matrix = rng.normal(size=(10, 3))
+        boot1 = ssr_core.joint_paired_bootstrap_means(e_matrix, n_iters=500, seed=99)
+        boot2 = ssr_core.joint_paired_bootstrap_means(e_matrix, n_iters=500, seed=99)
+        np.testing.assert_array_equal(boot1, boot2)
+
+    def test_single_respondent_degenerates_without_crashing(self):
+        e_matrix = np.array([[4.0, 2.0]])
+        boot = ssr_core.joint_paired_bootstrap_means(e_matrix, n_iters=50, seed=1)
+        self.assertEqual(boot.shape, (50, 2))
+        self.assertEqual(ssr_core.pairwise_win_probability(boot, 0, 1), 1.0)
+
+    def test_empty_matrix_raises(self):
+        with self.assertRaises(ValueError):
+            ssr_core.joint_paired_bootstrap_means(np.zeros((0, 2)))
+
+
+class TestKendallTau(unittest.TestCase):
+    def test_identical_order_gives_tau_one(self):
+        self.assertEqual(ssr_core.kendall_tau(["A", "B", "C"], ["A", "B", "C"]), 1.0)
+
+    def test_fully_reversed_order_gives_tau_minus_one(self):
+        self.assertEqual(ssr_core.kendall_tau(["A", "B", "C"], ["C", "B", "A"]), -1.0)
+
+    def test_known_partial_agreement_value(self):
+        # order_b — order_a с переставленными местами B и C (один discordant pair
+        # из 6 -> tau = (5-1)/6, см. докстринг ручного расчёта в review/шаблоне).
+        tau = ssr_core.kendall_tau(["A", "B", "C", "D"], ["A", "C", "B", "D"])
+        self.assertAlmostEqual(tau, 4 / 6, places=9)
+
+    def test_mismatched_sets_raise_value_error(self):
+        with self.assertRaises(ValueError):
+            ssr_core.kendall_tau(["A", "B", "C"], ["A", "B", "D"])
+
+    def test_single_element_gives_tau_one(self):
+        self.assertEqual(ssr_core.kendall_tau(["A"], ["A"]), 1.0)
+
+
+# ----------------------------------------------------------------------------
 # aggregate_pmfs_by_key
 # ----------------------------------------------------------------------------
 

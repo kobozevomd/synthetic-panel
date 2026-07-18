@@ -62,9 +62,10 @@
       "completed_at": "2026-07-09T21:35:49.192738+00:00"
     },
     "score": {
-      "embedding_model": "paraphrase-multilingual-MiniLM-L12-v2",
+      "embedding_model": "ai-forever/ru-en-RoSBERTa",
       "embedding_device": "cpu",
-      "embedding_prefix": "",
+      "embedding_prefix": "classification: ",
+      "embedding_validated_stack": true,
       "epsilon": 0.001,
       "pmf_temperature": 1.0,
       "min_anchor_sets": 4,
@@ -72,11 +73,24 @@
       "bootstrap_iters": 1000,
       "bootstrap_seed": 42,
       "ci": 0.95,
-      "completed_at": "2026-07-09T21:42:15.390719+00:00"
+      "completed_at": "2026-07-18T09:38:41.538867+00:00"
     },
     "report": {
       "report_path": "/Users/romankobozev/Documents/Claude/Projects/Синтетические ИИ-панели/synthetic-panel/runs/cjm_hairloss_demo_rtb_20260710-0035/report.md",
-      "completed_at": "2026-07-09T21:42:22.437000+00:00"
+      "mode": "exploratory",
+      "completed_at": "2026-07-18T09:38:48.202507+00:00"
     }
+  },
+  "anchors_version": 2,
+  "agent_self_report": {
+    "model": "claude-sonnet-5",
+    "self_reported": true,
+    "recorded_at": "2026-07-18T09:38:26.842523+00:00"
+  },
+  "embedding_model": "ai-forever/ru-en-RoSBERTa",
+  "mode": "exploratory",
+  "model": "claude-sonnet-5 (самодекларация модели-агента, self_reported=true)",
+  "controls_verdict": {
+    "applicable": false
   }
 }

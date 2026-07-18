@@ -1,0 +1,322 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Отчёт: cjm_hairloss_demo — Карта сегментов и AI CJM</title>
+<style>
+:root {
+  --bg: #fbfaf7;
+  --text: #20242c;
+  --muted: #5b6472;
+  --accent: #1f4e79;
+  --border: #dcdfe4;
+  --card-bg: #ffffff;
+  --confident: #1e7d34;
+  --borderline: #b8860b;
+  --noise: #78828e;
+  --disclaimer-bg: #fdf8ec;
+  --disclaimer-border: #e7d8a8;
+  --highlight-bg: #eef4fb;
+  --highlight-border: #c9dcef;
+}
+* { box-sizing: border-box; }
+html, body {
+  margin: 0; padding: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  font-size: 16px;
+  line-height: 1.6;
+}
+.page {
+  max-width: 880px;
+  margin: 0 auto;
+  padding: 32px 24px 64px;
+}
+h1, h2, h3, h4, .card-title, .passport-title, .how-to-read-title {
+  font-family: Georgia, "Times New Roman", serif;
+  color: var(--accent);
+  font-weight: 700;
+}
+h1 { font-size: 1.7em; margin: 0 0 6px; }
+h2 { font-size: 1.32em; margin: 2.2em 0 0.6em; border-bottom: 1px solid var(--border); padding-bottom: 0.3em; }
+h3.sub-heading { font-size: 1.1em; margin: 1.6em 0 0.5em; }
+h4.sub-heading, h5.sub-heading, h6.sub-heading { font-size: 1em; margin: 1.2em 0 0.4em; color: var(--text); }
+p { margin: 0.7em 0; }
+ul, ol { margin: 0.6em 0; padding-left: 1.4em; }
+li { margin: 0.25em 0; }
+code { background: #eef0f3; border-radius: 3px; padding: 0.1em 0.35em; font-size: 0.92em; }
+.ref-link code { background: #e6eaf0; }
+hr { border: none; border-top: 1px solid var(--border); margin: 1.6em 0; }
+
+.report-header { margin-bottom: 6px; }
+.report-subtitle { color: var(--muted); font-size: 0.95em; margin: 0 0 10px; }
+.mode-badge {
+  display: inline-block;
+  font-size: 0.82em;
+  font-weight: 600;
+  padding: 3px 11px;
+  border-radius: 999px;
+  letter-spacing: 0.01em;
+}
+.badge-validated { background: #e4f3e8; color: var(--confident); border: 1px solid #bfe2c9; }
+.badge-exploratory { background: #eaf0f8; color: var(--accent); border: 1px solid #c9dcef; }
+.badge-note { color: var(--muted); font-size: 0.85em; }
+
+.how-to-read {
+  background: var(--highlight-bg);
+  border: 1px solid var(--highlight-border);
+  border-radius: 10px;
+  padding: 14px 20px;
+  margin: 18px 0 26px;
+}
+.how-to-read-title { margin: 0 0 6px; font-size: 1em; }
+.how-to-read ol { margin: 0; padding-left: 1.3em; }
+.how-to-read li { font-size: 0.95em; color: var(--text); margin: 0.35em 0; }
+
+.method-passport {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 14px 20px;
+  margin: 0 0 26px;
+}
+.passport-title { margin: 0 0 8px; font-size: 1em; }
+.meta-row { display: flex; gap: 10px; font-size: 0.93em; padding: 2px 0; }
+.meta-label { color: var(--muted); min-width: 190px; flex-shrink: 0; }
+.meta-value { color: var(--text); }
+.meta-note { color: var(--muted); font-size: 0.88em; margin-top: 8px; font-style: italic; }
+
+.highlights-box {
+  background: var(--highlight-bg);
+  border: 1px solid var(--highlight-border);
+  border-radius: 10px;
+  padding: 6px 22px 14px;
+  margin: 0 0 28px;
+}
+.highlights-box h2 { border-bottom: none; margin-top: 0.6em; }
+
+.recommendations-box {
+  background: #f2f7f0;
+  border: 1px solid #d3e6cd;
+  border-radius: 10px;
+  padding: 6px 22px 14px;
+  margin: 28px 0;
+}
+.recommendations-box h2 { border-bottom: none; margin-top: 0.6em; }
+
+.segment-card {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 16px 20px;
+  margin: 16px 0;
+}
+.card-title { font-size: 1.08em; margin: 0 0 2px; }
+.card-scale { color: var(--muted); font-size: 0.9em; margin-bottom: 10px; }
+.rank-rows { display: flex; flex-direction: column; gap: 8px; }
+.rank-row {
+  display: grid;
+  grid-template-columns: 26px 1fr auto 160px;
+  gap: 12px;
+  align-items: center;
+  padding: 6px 0;
+  border-top: 1px solid #eee;
+}
+.rank-row:first-child { border-top: none; }
+.rank-num { font-weight: 700; color: var(--muted); text-align: center; }
+.rank-label { font-size: 0.95em; }
+.e-hint { display: block; color: var(--muted); font-size: 0.82em; margin-top: 2px; }
+.rank-bar { white-space: nowrap; }
+.bar-missing { color: var(--muted); font-size: 0.82em; font-style: italic; }
+.rank-sep { display: flex; align-items: center; gap: 6px; font-size: 0.82em; color: var(--muted); white-space: normal; }
+.dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; display: inline-block; }
+.dot-confident { background: var(--confident); }
+.dot-borderline { background: var(--borderline); }
+.dot-noise { background: var(--noise); }
+.dot-unknown { background: #b8b8b8; }
+.dot-none { background: transparent; border: 1px solid #cfcfcf; }
+
+.pmf-svg .bar-track { fill: #eef0f3; }
+.pmf-svg .bar-fill { fill: var(--accent); }
+.pmf-svg .bar-label { font-size: 8px; fill: var(--muted); }
+
+blockquote.quote-card {
+  background: #f7f6f2;
+  border-left: 3px solid var(--accent);
+  margin: 0.8em 0;
+  padding: 0.5em 1em;
+  font-style: italic;
+  color: #33383f;
+}
+
+.table-wrap { overflow-x: auto; margin: 1em 0; }
+table.generic-table { border-collapse: collapse; width: 100%; font-size: 0.92em; }
+table.generic-table th, table.generic-table td {
+  border: 1px solid var(--border);
+  padding: 6px 10px;
+  text-align: left;
+  vertical-align: top;
+}
+table.generic-table th { background: #f2f3f5; font-weight: 700; }
+
+.appendix-note { color: var(--muted); font-size: 0.85em; font-style: italic; }
+
+details.appendix { margin: 28px 0; border: 1px solid var(--border); border-radius: 10px; padding: 4px 20px; background: var(--card-bg); }
+details.appendix > summary { cursor: pointer; font-weight: 700; color: var(--accent); padding: 10px 0; font-family: Georgia, serif; }
+
+.disclaimer-block {
+  background: var(--disclaimer-bg);
+  border: 1px solid var(--disclaimer-border);
+  border-radius: 10px;
+  padding: 6px 24px 18px;
+  margin: 32px 0 0;
+}
+.disclaimer-block h2, .disclaimer-block h3.sub-heading { border-bottom: none; }
+
+.page-footer { margin-top: 40px; color: var(--muted); font-size: 0.82em; text-align: center; }
+
+@media (max-width: 640px) {
+  .rank-row { grid-template-columns: 22px 1fr; grid-template-rows: auto auto; }
+  .rank-bar, .rank-sep { grid-column: 1 / -1; }
+  .meta-row { flex-direction: column; gap: 0; }
+  .meta-label { min-width: 0; }
+}
+
+@media print {
+  body { background: #fff; }
+  .page { max-width: 100%; padding: 0 8px; }
+  details.appendix { border: 1px solid #999; }
+  a { color: inherit; text-decoration: none; }
+}
+</style>
+</head>
+<body>
+<!-- ranking_cards_rendered: 2 -->
+<div class="page">
+<header class="report-header">
+<h1>Отчёт: cjm_hairloss_demo — Карта сегментов и AI CJM</h1>
+<p class="report-subtitle"><span class="mode-badge badge-exploratory">Разведочный режим</span> <span class="badge-note" title="Поле mode отсутствует в manifest.json этого прогона — показан безопасный дефолт exploratory">· не размечен в manifest</span></p>
+</header>
+<aside class="how-to-read"><p class="how-to-read-title">Как читать этот отчёт</p><ol><li>Читайте цифры и цвета ниже как сравнение вариантов между собой в этом прогоне, а не как процент реальных покупателей — сила метода в относительном порядке, а не в абсолютных числах.</li><li>Светофор показывает надёжность разницы (устойчива ли она при повторной проверке), а не её размер: серый цвет не значит «плохой результат», только «разница пока в пределах шума метода».</li><li>Полные ограничения метода — раздел «Границы этого отчёта» в конце документа; не читайте цифры выше в отрыве от него.</li></ol></aside>
+<section class="method-passport"><p class="passport-title">О прогоне</p><div class="meta-row"><span class="meta-label">Категория</span><span class="meta-value">средства от выпадения волос</span></div><div class="meta-row"><span class="meta-label">Бренд/препарат</span><span class="meta-value">ДемоБренд (вымышленный)</span></div><div class="meta-row"><span class="meta-label">Вертикаль</span><span class="meta-value">pharma_otc</span></div><div class="meta-row"><span class="meta-label">Дата прогона</span><span class="meta-value">2026-07-09T21:17:41+00:00</span></div><div class="meta-row"><span class="meta-label">Устойчивость сегментации</span><span class="meta-value">3 независимых прогона(ов), режим независимости — approximated (демо-приближение: прогоны 1-3 выполнены последовательно в одном контексте одним агентом, с явной инструкцией не опираться на предыдущий прогон; НЕ боевой режим — для сдачи реальному клиенту нужны отдельные субагенты/API-вызовы на каждый прогон, см. <code>manifest.json</code>)</span></div><div class="meta-row"><span class="meta-label">Целевой диапазон сегментов</span><span class="meta-value">5–12 (результат устойчивости, не заданное число — фактическое ядро см. в разделе 3 ниже: 8 сегментов)</span></div><div class="meta-row"><span class="meta-label">Шаблоны промптов</span><span class="meta-value"><code>references/cjm_prompts_ru.md</code> (кодифицированная переработка цепочки промптов стратегов, см. там же таблицу соответствия)</span></div><div class="meta-row"><span class="meta-label">Manifest</span><span class="meta-value"><code class="ref-path">manifest.json</code></span></div><div class="meta-row"><span class="meta-label">Линтер честности</span><span class="meta-value">пройден (exit 0) — <code>python scripts/cjm_lint.py --report cjm_report.md</code></span></div><p class="meta-note">Этот отчёт — вывод синтетической ИИ-панели, режим `segment_map` (кодификация AI CJM-цепочки стратегов с исправлением её слабых мест — выдуманные проценты, сочинённые цитаты без источника, невоспроизводимость одной чат-сессии, искусственно фиксированное число сегментов). Полная карта доверия — раздел 1 ниже; несъёмные ограничения метода — раздел 8 в конце документа. Не читать разделы 3-6 в отрыве от них. **Это демо-пилот на вымышленном бренде** — проверка пайплайна end-to-end, а не готовый вывод для реального клиента (нет реальной инструкции препарата, нет соцлистенинга, устойчивость сегментации — приближённая, не боевая).</p></section>
+<section class="trust-legend"><h2>Легенда карты доверия</h2><p>Каждый раздел этого отчёта несёт один из трёх статусов:</p>
+<div class="table-wrap"><table class="generic-table"><thead><tr><th>Статус</th><th>Значение</th><th>Примеры полей</th></tr></thead><tbody><tr><td>🟢</td><td>Модельное качественное — законная зона LLM; синтетическая природа не отменяет содержательную ценность</td><td>мотивации, барьеры, живой язык, JTBD, психологические триггеры, стадии CJM</td></tr><tr><td>🟡</td><td>Гипотеза для проверки — не факт, но проверяемое утверждение</td><td>RTB-кандидаты до теста, неосознанные потребности, карта тачпоинтов, медиазадачи</td></tr><tr><td>🔴</td><td>Требует данных — LLM это не считает и не должна изображать, что посчитала</td><td>любая доля/процент/распределение состояний аудитории без реального измерения</td></tr></tbody></table></div>
+<p>После SSR-теста (раздел 6.2) RTB-кандидаты получают ДОПОЛНИТЕЛЬНЫЙ статус — измеренный панелью рейтинг (E[шкала], 95% ДИ, разделимость), а не просто 🟡 гипотезу — тем же методом SSR, что и в режимах 1-4 скилла, с теми же ограничениями (относительный порядок надёжен, абсолютные значения — нет; см. раздел 8).</p>
+<hr/></section>
+<h2>2. Фарма-гейт 🔴</h2><ul><li><strong>Источник инструкции:</strong> обобщённая_демо (типовая демо-инструкция категории «средства от выпадения волос», НЕ инструкция конкретного препарата — см. <code>00_filter.md</code>, <code>00_filter.yaml</code>)</li><li><strong>Статус фильтра:</strong> 🔴 (обобщённая/демо-инструкция, не реальная инструкция конкретного продукта — для реального клиента этот раздел обязан быть заменён на фильтр по настоящей инструкции)</li><li><strong>Разрешённая аудитория:</strong> взрослые 18+ (мужчины и женщины) с бытовым, сезонным, стрессовым или возрастным поредением/истончением волос, без острых заболеваний кожи головы, подтверждённой непереносимости компонентов, вне беременности/лактации (для активных форм); также взрослые без явных признаков, но с профилактической мотивацией.</li><li><strong>Исключено из анализа:</strong> дети/подростки до 18 лет; беременные/кормящие как целевой сегмент продвижения именно активных форм (тема беременности/ГВ фигурирует в сегменте «Молодые мамы после родов» только как барьер к выбору активных форм, не как отдельный продвигаемый сегмент); люди с острыми заболеваниями кожи головы, ищущие лечение через космецевтику вместо дерматолога.</li></ul>
+<p>Rx-предупреждение по ФЗ-38 ст. 24 не применяется — <code>vertical: pharma_otc</code>, не <code>pharma_rx</code> (см. <code>00_filter.yaml: rx_warning_included: false</code>).</p>
+<hr/>
+<h2>3. Сегменты: сводная таблица и устойчивость 🟢🔴</h2><p>Каждый сегмент ядра получен минимум в 3 независимых прогонах сегментации и несёт метку воспроизводимости — см. <code>references/cjm_prompts_ru.md</code>, стадия 1.2, и <code>01_segments_merged.yaml</code>. Оценка размера — ранг, не число (статус 🔴 в каждой строке); устойчивость и мотивация/барьер — модельное качественное (🟢).</p>
+<h4 class="sub-heading">Ядро (8 сегментов)</h4>
+<div class="table-wrap"><table class="generic-table"><thead><tr><th>Сегмент</th><th>Устойчивость 🟢</th><th>Главная мотивация</th><th>Главный барьер</th><th>Оценка размера 🔴</th><th>Прогоны-источники</th></tr></thead><tbody><tr><td>Молодые мамы после родов (<code>molodye_mamy_posle_rodov</code>)</td><td>3/3</td><td>Вернуть волосы (и ощущение «себя прежней») к состоянию до беременности</td><td>Неуверенность в безопасности активных средств при ГВ</td><td>один из крупных сегментов (оценка)</td><td>run1, run2, run3</td></tr><tr><td>Женщины в пери-/менопаузе (<code>zhenshchiny_menopauza</code>)</td><td>3/3</td><td>Понять, где «просто возраст», а где ещё можно повлиять</td><td>Сомнение, что космецевтика способна повлиять на гормональную причину</td><td>средний (оценка)</td><td>run1, run2, run3</td></tr><tr><td>Мужчины с ранним поредением (<code>muzhchiny_rannee_poredenie</code>)</td><td>3/3</td><td>Остановить поредение, пока не стало заметно окружающим</td><td>Смесь «уже поздно» и нежелания, чтобы кто-то заметил беспокойство</td><td>один из крупных сегментов (оценка)</td><td>run1, run2, run3</td></tr><tr><td>Хронический стресс/выгорание (<code>khronicheskiy_stress</code>)</td><td>3/3</td><td>Вернуть контроль хотя бы над одним симптомом перегрузки</td><td>Ощущение, что без решения проблемы стресса средство бессильно</td><td>выше среднего (оценка)</td><td>run1, run2, run3</td></tr><tr><td>Натуральники — состав без синтетики (<code>naturalniki_bez_khimii</code>)</td><td>3/3</td><td>Уход, не противоречащий философии «естественности»</td><td>Недоверие к синтетическим компонентам независимо от доказанной безопасности</td><td>нишевый, но заметный (оценка)</td><td>run1, run2, run3</td></tr><tr><td>Разочарованные ветераны категории (<code>razocharovannye_veterany</code>)</td><td>3/3</td><td>Найти то, что наконец сработает</td><td>Глубокое недоверие к новым обещаниям категории</td><td>средний (оценка)</td><td>run1, run2, run3</td></tr><tr><td>Повреждённые волосы после процедур (<code>povrezhdenie_posle_protsedur</code>)</td><td>2/3</td><td>Восстановить волосы после собственных процедур красоты</td><td>Тревога, что повреждение уже необратимо</td><td>средний (оценка)</td><td>run1, run3</td></tr><tr><td>Экономные, откладывающие решение (<code>ekonomnye_otlozhennoe_reshenie</code>)</td><td>2/3</td><td>Сделать что-то по минимуму, не превращая тему в статью расходов</td><td>Сомнение, что трата вообще оправдана</td><td>один из крупных сегментов (оценка)</td><td>run1, run2</td></tr></tbody></table></div>
+<h4 class="sub-heading">Неустойчивые сегменты (приложение — НЕ ядро)</h4>
+<p>Воспроизведены только в 1 из 3 прогонов — не используются для RTB-теста и клиентских выводов без дополнительного прогона сегментации.</p>
+<div class="table-wrap"><table class="generic-table"><thead><tr><th>Сегмент</th><th>Барьер</th><th>Комментарий</th></tr></thead><tbody><tr><td>Сезонные наблюдатели / весенне-осенние паникёры (<code>sezonnye_nablyudateli</code>)</td><td>Неуверенность, стоит ли вообще что-то предпринимать («может, само пройдёт»)</td><td>воспроизведён только в прогоне 1 из 3</td></tr><tr><td>Выпадение волос после болезни или приёма лекарств (<code>posle_bolezni_medikamentoznoe</code>)</td><td>Неуверенность, стоит ли предпринимать что-то сейчас или ждать восстановления организма</td><td>воспроизведён только в прогоне 2 из 3</td></tr></tbody></table></div>
+<p><strong>Наблюдение об устойчивости категории.</strong> 6 из 10 уникальных сегментов, встреченных хотя бы в одном прогоне, воспроизвелись во ВСЕХ трёх прогонах — довольно высокая устойчивость категории к пересегментации одним и тем же поведенческо-мотивационным подходом. Итоговое число сегментов ядра (8) не подгонялось под целевой диапазон [5, 12] — это результат объединения, а не входное требование (подробнее — <code>01_segments_merged.yaml</code>, комментарий в конце файла).</p>
+<hr/>
+<h2>4. Карта сегментов и CJM 🟢</h2><p>Полный CJM в этом пилоте построен для <strong>2 устойчивых (3/3) сегментов ядра</strong> — per Definition of Done пилота (<code>test_segments: 2</code> в <code>studies/cjm_hairloss_demo.yaml</code>); полные материалы — в файлах <code>02_cjm_molodye_mamy_posle_rodov.md</code> и <code>02_cjm_muzhchiny_rannee_poredenie.md</code> (ниже — содержательное сокращение, не просто ссылка).</p>
+<h4 class="sub-heading">Сегмент: Молодые мамы после родов</h4>
+<p><strong>Портрет (кратко):</strong> женщины в первый год после родов со стандартным послеродовым (телогеновым) выпадением волос, пик которого — 2-4 месяц. Мотивация — вернуть ощущение «себя прежней»; барьер — неуверенность в безопасности активных средств при грудном вскармливании и нехватка времени/сил на сложный уход.</p>
+<h5 class="sub-heading">Этап 1. Осознание проблематики</h5>
+<p>Ранние маркеры («волосы стали чуть суше», «немного больше волос в расчёске, но списываю на усталость») переходят в поздние маркеры/симптомы («волосы явно выпадают клочьями», «после мытья в сливе целый ком волос») в характерном для сегмента преувеличенно-эмоциональном языке («будто вылезло полголовы»). Самодиагностика — «это гормональное, после родов, само пройдёт»; врачебная формулировка (если обращалась) — «телогеновая алопеция, временная реакция, обычно нормализуется за 6-12 месяцев». Эмоционально — приглушённая тревога («знаю, что пройдёт, но всё равно расстраиваюсь») и лёгкое чувство вины за «недостаточную» заботу о себе на фоне заботы о ребёнке. Поведение после осознания (с поправкой на нонкомплаенс/самолечение как норму, не исключение): в первую очередь — поиск в интернете и мамских чатах, а не визит к врачу специально по этому поводу; часть сегмента просто ждёт, что пройдёт само.</p>
+<p>Соотношение маркер/симптом/диагноз: 🔴 нет данных — оценка, не измерение (см. <code>03_data_merge.md</code>).</p>
+<h5 class="sub-heading">Этап 2. Поиск решения</h5>
+<p>Чаще всего — «ждать и наблюдать», затем самостоятельный подбор аптечного средства по совету из чатов; визит к трихологу — реже всего. Топ-факторы выбора (без процентов, по значимости): безопасность при ГВ → простота использования → скорость результата → цена → рекомендация других мам. Источники: мамские чаты и форумы (высокое доверие) → ночной поиск в поисковиках → педиатр/гинеколог попутно, не специально. Ключевые поисковые запросы: «выпадение волос после родов когда пройдёт», «можно ли сыворотку для волос при грудном вскармливании», «послеродовое выпадение волос сколько длится». Влияние источников (ранг, не %): мамские сообщества &gt; личный опыт подруг &gt; совет врача между делом &gt; реклама.</p>
+<h5 class="sub-heading">Этап 3. Процесс лечения/использования</h5>
+<p>Выбирает по рекомендации из чатов, проверяет «можно ли при ГВ». С поправкой на нонкомплаенс: часть сегмента прекращает использование раньше срока инструкции, если не видит быстрого эффекта («если через месяц не вижу разницы — скорее всего, брошу»). Отслеживает эффект неформально; делится обратной связью в тех же чатах, где спрашивала совета. При успехе — переносит доверие к бренду на рекомендации другим мамам; при завершении ГВ интерес к теме обычно падает, использование не становится постоянной привычкой.</p>
+<h5 class="sub-heading">Резюме для перехода к RTB</h5>
+<p>Топ-3 барьера: (1) сомнение в безопасности при ГВ, (2) нехватка времени и сил на сложный уход, (3) сомнение, стоит ли вообще тратиться на «то, что само пройдёт». Топ-2 ожидаемых эффекта: замедление видимого выпадения; уверенность в отсутствии вреда для ребёнка. Источники доверия: опыт других мам, понятное указание совместимости с ГВ.</p>
+<h4 class="sub-heading">Сегмент: Мужчины с ранним поредением, боящиеся облысения</h4>
+<p><strong>Портрет (кратко):</strong> мужчины 20-35 лет с ранними признаками андрогенетического поредения, в разрыве между публичным отрицанием проблемы и активным, тревожным одиночным поиском информации. Мотивация — успеть отреагировать, пока не стало заметно окружающим; барьер — социальная неловкость темы и недоверие к рекламным обещаниям категории.</p>
+<h5 class="sub-heading">Этап 1. Осознание проблематики</h5>
+<p>Ранние маркеры («волосы на подушке чуть больше обычного», «показалось, что залысины на висках чуть выделяются на фото») переходят в поздние/симптомы («залысины на висках заметны при ярком свете», «пробор на макушке стал явно шире»). Самодиагностика — «андрогенетическая алопеция», «по наследству — у отца/деда так же было». Эмоционально — тревога вперемешку со стыдом обсуждать тему вслух, скрытая паника при сравнении со старыми фотографиями. Поведение после осознания (поправка на нонкомплаенс): не идёт сразу к врачу — одиночный ночной поиск в интернете, скрывает беспокойство даже от близких, пробует менять привычки сам без консультации.</p>
+<p>Соотношение маркер/симптом/диагноз: 🔴 нет данных — оценка, не измерение.</p>
+<h5 class="sub-heading">Этап 2. Поиск решения</h5>
+<p>Чаще всего — самостоятельный подбор по составу через форумы; визит к трихологу — редко и не сразу. Топ-факторы выбора: доказанность действующего вещества → скорость эффекта → незаметность процесса для окружающих → цена → отсутствие необходимости обсуждать тему с кем-либо. Источники: профильные форумы, включая англоязычные (высокое доверие к опыту «таких же») → YouTube-обзоры составов → фармацевт → трихолог (крайне редко). Ключевые запросы: «андрогенетическая алопеция что делать», «залысины в 25 лет что делать», «средство от выпадения волос для мужчин состав». Влияние источников (ранг): собственное сравнение состава &gt; опыт знакомых &gt; фармацевт &gt; реклама (реклама влияет слабее всего).</p>
+<h5 class="sub-heading">Этап 3. Процесс лечения/использования</h5>
+<p>Выбирает по составу и отзывам, не по бренду. С поправкой на нонкомплаенс: при отсутствии быстрого эффекта склонен прекратить раньше срока инструкции. Настороженно, временами навязчиво отслеживает состояние волос в зеркале; сравнивает фото «до/после». Делится обратной связью редко и не открыто. При успехе — негромкий источник рекомендаций для друзей; при неудаче — цинично относится к категории в целом.</p>
+<h5 class="sub-heading">Резюме для перехода к RTB</h5>
+<p>Топ-3 барьера: (1) недоверие к рекламным обещаниям без объяснения состава, (2) социальная неловкость темы, (3) сомнение, что уже не поздно. Топ-2 ожидаемых эффекта: видимое замедление/остановка поредения; возможность действовать незаметно для окружающих. Источники доверия: опыт таких же пользователей на форумах, объяснение механизма действия, а не бренд/реклама.</p>
+<p><em>Полные материалы стадии 2 (детальные списки формулировок, JTBD, матрицы боль/барьер/поведение/решение, отличия от других сегментов ядра) — <code>02_cjm_molodye_mamy_posle_rodov.md</code>, <code>02_cjm_muzhchiny_rannee_poredenie.md</code>.</em></p>
+<hr/>
+<h2>5. Данные и источники 🔴</h2><p>Статусы: 🟢 — значение подтверждено тегом реального источника; 🔴 — данных нет, указана оценка, а не измерение. <code>studies/cjm_hairloss_demo.yaml: data_inputs</code> — все три поля (<code>drug_instruction</code>, <code>social_listening</code>, <code>category_data</code>) равны <code>null</code> в этом демо-пилоте — ни одна цифра ниже не сгенерирована «из головы» как факт, полный протокол и список того, что могло бы заменить оценки при наличии данных — <code>03_data_merge.md</code>.</p>
+<h4 class="sub-heading">Молодые мамы после родов</h4>
+<div class="table-wrap"><table class="generic-table"><thead><tr><th>Поле</th><th>Статус/значение</th><th>Источник</th><th>Комментарий</th></tr></thead><tbody><tr><td>Соотношение маркер/симптом/диагноз</td><td>🔴 нет данных — оценка</td><td>—</td><td>категорийная эпидемиология не передана</td></tr><tr><td>Частота стратегий («ждать» vs «подбор средства» vs «визит к трихологу»)</td><td>🔴 нет данных — оценка; ранг: «ждать» чаще прочего</td><td>—</td><td>ранговая оценка, не измерение</td></tr><tr><td>Влияние источников (мамские чаты vs врач vs реклама)</td><td>🔴 нет данных — оценка; ранг «чаты &gt; подруги &gt; врач &gt; реклама»</td><td>—</td><td>при реальном опросе — тег <code>[опрос]</code></td></tr><tr><td>Оценка размера сегмента</td><td>🔴 один из крупных сегментов — оценка</td><td>—</td><td>категорийные данные не переданы</td></tr></tbody></table></div>
+<h4 class="sub-heading">Мужчины с ранним поредением</h4>
+<div class="table-wrap"><table class="generic-table"><thead><tr><th>Поле</th><th>Статус/значение</th><th>Источник</th><th>Комментарий</th></tr></thead><tbody><tr><td>Соотношение маркер/симптом/диагноз</td><td>🔴 нет данных — оценка</td><td>—</td><td>эпидемиология обращаемости не передана</td></tr><tr><td>Частота стратегий («самоподбор по составу» vs «визит к трихологу» vs «игнорирование»)</td><td>🔴 нет данных — оценка</td><td>—</td><td>ранговая оценка</td></tr><tr><td>Влияние источников (форумы vs фармацевт vs реклама)</td><td>🔴 нет данных — оценка; ранг «форумы &gt; знакомые &gt; фармацевт &gt; реклама»</td><td>—</td><td>при опросе — тег <code>[опрос]</code> вместо ранга</td></tr><tr><td>Оценка размера сегмента</td><td>🔴 один из крупных сегментов — оценка</td><td>—</td><td>категорийные данные не переданы</td></tr></tbody></table></div>
+<h4 class="sub-heading">Остальные сегменты ядра (оценка размера, без полного CJM в этом пилоте)</h4>
+<div class="table-wrap"><table class="generic-table"><thead><tr><th>Сегмент</th><th>Оценка размера</th><th>Источник</th><th>Комментарий</th></tr></thead><tbody><tr><td>Женщины в пери-/менопаузе</td><td>🔴 средний — оценка</td><td>—</td><td>нет категорийных данных</td></tr><tr><td>Хронический стресс/выгорание</td><td>🔴 выше среднего — оценка</td><td>—</td><td>нет категорийных данных</td></tr><tr><td>Натуральники — состав без синтетики</td><td>🔴 нишевый, но заметный — оценка</td><td>—</td><td>нет категорийных данных</td></tr><tr><td>Разочарованные ветераны категории</td><td>🔴 средний — оценка</td><td>—</td><td>нет категорийных данных</td></tr><tr><td>Повреждённые волосы после процедур</td><td>🔴 средний — оценка</td><td>—</td><td>нет категорийных данных</td></tr><tr><td>Экономные, откладывающие решение</td><td>🔴 один из крупных — оценка</td><td>—</td><td>нет категорийных данных</td></tr></tbody></table></div>
+<hr/>
+<h2>6. Тест RTB (кандидаты 🟡 → результат SSR-теста)</h2><h4 class="sub-heading">6.1. Кандидаты (до теста)</h4>
+<p>Каждый кандидат ниже — 🟡 гипотеза для проверки, до того как результат SSR-теста ниже заполнен реальным рейтингом. Формула — <code>references/cjm_prompts_ru.md</code>, стадия 4.1 (адаптация промпта 10 стратегов, без придуманной точности доказательства). Форма А (общий пул) — 4 ОБЩИХ стимула протестированы на ОБОИХ сегментах ядра, прошедших полный CJM (см. <code>04_rtb_candidates.yaml</code>).</p>
+<div class="table-wrap"><table class="generic-table"><thead><tr><th>id</th><th>Текст</th><th>Целевой барьер</th><th>Целевой benefit</th><th>Тип RTB</th></tr></thead><tbody><tr><td>rtb1</td><td>«Если переживаете, что активный уход может быть слишком агрессивным именно сейчас, ДемоБренд предлагает бережную поддержку волос благодаря формуле с растительными экстрактами, которая укрепляет волосяные фолликулы, не перегружая их синтетическими компонентами.»</td><td>тревога о безопасности/агрессивности состава</td><td>бережная эффективная поддержка</td><td>механизм действия (растительные экстракты)</td></tr><tr><td>rtb2</td><td>«Если вы уже разочаровались в громких обещаниях «заново за месяц», ДемоБренд не обещает чуда — он поддерживает волосы благодаря составу, который работает на укрепление структуры волоса изнутри, и честно говорит о постепенном, а не мгновенном результате.»</td><td>усталость от громких обещаний, недоверие после неудач</td><td>честный постепенный результат</td><td>механизм действия + честность ограничений</td></tr><tr><td>rtb3</td><td>«Если не хочется превращать уход за волосами в отдельный сложный ритуал или разговор с кем-либо, ДемоБренд — это одно простое действие внутри привычного ухода, разработанное с учётом рекомендаций специалистов по уходу за волосами, без лишних шагов и лишнего внимания к теме.»</td><td>нежелание обсуждать тему / сложный ритуал</td><td>простота, дискретность использования</td><td>рекомендация специалистов (тип авторитета, без чисел)</td></tr><tr><td>rtb4</td><td>«Если для вас важно понимать, что именно вы наносите на кожу головы, состав ДемоБренд полностью прозрачен и построен на растительных активных компонентах, действие каждого из которых объяснено просто, без сложных терминов и голых обещаний.»</td><td>недоверие к синтетическому составу</td><td>прозрачность состава</td><td>прозрачность/объяснение состава</td></tr></tbody></table></div>
+<p>Ни один кандидат не содержит придуманной точности доказательства (конкретных цифр участников исследований, процентов эффективности) — правило §4.1 спецификации, ключевая правка относительно оригинального промпта стратегов (там пример RTB содержал вымышленную «клиническими исследованиями на 1000+ пациентах»).</p>
+<h4 class="sub-heading">6.2. Результат SSR-теста</h4>
+<p>Источник — <code>runs/cjm_hairloss_demo_rtb_20260710-0035/report.md</code> (штатный <code>scripts/report.py</code>, тот же измерительный слой SSR, что и в режимах 1-4 скилла). N = 20 респондентов (2 сегмента × 10) × 4 стимула × 2 сэмпла = 160 ответов, agent-режим (temperature не контролируется, см. <code>AGENT_TASK.md</code> того прогона), эмбеддинг-модель <code>paraphrase-multilingual-MiniLM-L12-v2</code>.</p>
+<h5 class="sub-heading">Сегмент: Молодые мамы после родов</h5>
+<div class="segment-card">
+  <div class="card-title">Молодые мамы после родов</div>
+  <div class="card-scale">Шкала: Готовность купить (purchase_intent)</div>
+  <div class="rank-rows"><div class="rank-row">
+  <div class="rank-num">1</div>
+  <div class="rank-label">rtb4: «Если для вас важно понимать, что именно вы наносите на кожу головы…»<span class="e-hint" title="Среднее по шкале 1-5 — подробности (CI/PMF) см. приложение">E≈3.59</span></div>
+  <div class="rank-bar"><svg viewBox="0 0 168 73" width="168" height="73" role="img" aria-label="Распределение ответов по шкале от 1 до 5" class="pmf-svg"><text x="0" y="9.4" class="bar-label">1</text><rect x="14" y="0" width="152" height="10" class="bar-track"/><rect x="14" y="0" width="21.7" height="10" class="bar-fill"/><text x="0" y="24.4" class="bar-label">2</text><rect x="14" y="15" width="152" height="10" class="bar-track"/><rect x="14" y="15" width="86.9" height="10" class="bar-fill"/><text x="0" y="39.4" class="bar-label">3</text><rect x="14" y="30" width="152" height="10" class="bar-track"/><rect x="14" y="30" width="130.3" height="10" class="bar-fill"/><text x="0" y="54.4" class="bar-label">4</text><rect x="14" y="45" width="152" height="10" class="bar-track"/><rect x="14" y="45" width="152.0" height="10" class="bar-fill"/><text x="0" y="69.4" class="bar-label">5</text><rect x="14" y="60" width="152" height="10" class="bar-track"/><rect x="14" y="60" width="130.3" height="10" class="bar-fill"/></svg></div>
+  <div class="rank-sep"><span class="dot dot-noise" aria-hidden="true"></span>не разделимо (CI пересекаются)</div>
+</div><div class="rank-row">
+  <div class="rank-num">2</div>
+  <div class="rank-label">rtb3: «Если не хочется превращать уход за волосами в отдельный сложный ритуал…»<span class="e-hint" title="Среднее по шкале 1-5 — подробности (CI/PMF) см. приложение">E≈3.40</span></div>
+  <div class="rank-bar"><svg viewBox="0 0 168 73" width="168" height="73" role="img" aria-label="Распределение ответов по шкале от 1 до 5" class="pmf-svg"><text x="0" y="9.4" class="bar-label">1</text><rect x="14" y="0" width="152" height="10" class="bar-track"/><rect x="14" y="0" width="43.4" height="10" class="bar-fill"/><text x="0" y="24.4" class="bar-label">2</text><rect x="14" y="15" width="152" height="10" class="bar-track"/><rect x="14" y="15" width="130.3" height="10" class="bar-fill"/><text x="0" y="39.4" class="bar-label">3</text><rect x="14" y="30" width="152" height="10" class="bar-track"/><rect x="14" y="30" width="108.6" height="10" class="bar-fill"/><text x="0" y="54.4" class="bar-label">4</text><rect x="14" y="45" width="152" height="10" class="bar-track"/><rect x="14" y="45" width="108.6" height="10" class="bar-fill"/><text x="0" y="69.4" class="bar-label">5</text><rect x="14" y="60" width="152" height="10" class="bar-track"/><rect x="14" y="60" width="152.0" height="10" class="bar-fill"/></svg></div>
+  <div class="rank-sep"><span class="dot dot-noise" aria-hidden="true"></span>не разделимо (CI пересекаются)</div>
+</div><div class="rank-row">
+  <div class="rank-num">3</div>
+  <div class="rank-label">rtb1: «Если переживаете, что активный уход может быть слишком агрессивным…»<span class="e-hint" title="Среднее по шкале 1-5 — подробности (CI/PMF) см. приложение">E≈3.33</span></div>
+  <div class="rank-bar"><svg viewBox="0 0 168 73" width="168" height="73" role="img" aria-label="Распределение ответов по шкале от 1 до 5" class="pmf-svg"><text x="0" y="9.4" class="bar-label">1</text><rect x="14" y="0" width="152" height="10" class="bar-track"/><rect x="14" y="0" width="43.4" height="10" class="bar-fill"/><text x="0" y="24.4" class="bar-label">2</text><rect x="14" y="15" width="152" height="10" class="bar-track"/><rect x="14" y="15" width="152.0" height="10" class="bar-fill"/><text x="0" y="39.4" class="bar-label">3</text><rect x="14" y="30" width="152" height="10" class="bar-track"/><rect x="14" y="30" width="130.3" height="10" class="bar-fill"/><text x="0" y="54.4" class="bar-label">4</text><rect x="14" y="45" width="152" height="10" class="bar-track"/><rect x="14" y="45" width="130.3" height="10" class="bar-fill"/><text x="0" y="69.4" class="bar-label">5</text><rect x="14" y="60" width="152" height="10" class="bar-track"/><rect x="14" y="60" width="152.0" height="10" class="bar-fill"/></svg></div>
+  <div class="rank-sep"><span class="dot dot-confident" aria-hidden="true"></span>разделимо (CI не пересекаются)</div>
+</div><div class="rank-row">
+  <div class="rank-num">4</div>
+  <div class="rank-label">rtb2: «Если вы уже разочаровались в громких обещаниях «заново за месяц»…»<span class="e-hint" title="Среднее по шкале 1-5 — подробности (CI/PMF) см. приложение">E≈2.89</span></div>
+  <div class="rank-bar"><svg viewBox="0 0 168 73" width="168" height="73" role="img" aria-label="Распределение ответов по шкале от 1 до 5" class="pmf-svg"><text x="0" y="9.4" class="bar-label">1</text><rect x="14" y="0" width="152" height="10" class="bar-track"/><rect x="14" y="0" width="86.9" height="10" class="bar-fill"/><text x="0" y="24.4" class="bar-label">2</text><rect x="14" y="15" width="152" height="10" class="bar-track"/><rect x="14" y="15" width="152.0" height="10" class="bar-fill"/><text x="0" y="39.4" class="bar-label">3</text><rect x="14" y="30" width="152" height="10" class="bar-track"/><rect x="14" y="30" width="108.6" height="10" class="bar-fill"/><text x="0" y="54.4" class="bar-label">4</text><rect x="14" y="45" width="152" height="10" class="bar-track"/><rect x="14" y="45" width="43.4" height="10" class="bar-fill"/><text x="0" y="69.4" class="bar-label">5</text><rect x="14" y="60" width="152" height="10" class="bar-track"/><rect x="14" y="60" width="108.6" height="10" class="bar-fill"/></svg></div>
+  <div class="rank-sep"><span class="dot dot-none" aria-hidden="true"></span>—</div>
+</div></div>
+</div>
+<h5 class="sub-heading">Сегмент: Мужчины с ранним поредением, боящиеся облысения</h5>
+<div class="segment-card">
+  <div class="card-title">Мужчины с ранним поредением, боящиеся облысения</div>
+  <div class="card-scale">Шкала: Готовность купить (purchase_intent)</div>
+  <div class="rank-rows"><div class="rank-row">
+  <div class="rank-num">1</div>
+  <div class="rank-label">rtb4: «Если для вас важно понимать, что именно вы наносите на кожу головы…»<span class="e-hint" title="Среднее по шкале 1-5 — подробности (CI/PMF) см. приложение">E≈3.44</span></div>
+  <div class="rank-bar"><svg viewBox="0 0 168 73" width="168" height="73" role="img" aria-label="Распределение ответов по шкале от 1 до 5" class="pmf-svg"><text x="0" y="9.4" class="bar-label">1</text><rect x="14" y="0" width="152" height="10" class="bar-track"/><rect x="14" y="0" width="43.4" height="10" class="bar-fill"/><text x="0" y="24.4" class="bar-label">2</text><rect x="14" y="15" width="152" height="10" class="bar-track"/><rect x="14" y="15" width="108.6" height="10" class="bar-fill"/><text x="0" y="39.4" class="bar-label">3</text><rect x="14" y="30" width="152" height="10" class="bar-track"/><rect x="14" y="30" width="108.6" height="10" class="bar-fill"/><text x="0" y="54.4" class="bar-label">4</text><rect x="14" y="45" width="152" height="10" class="bar-track"/><rect x="14" y="45" width="152.0" height="10" class="bar-fill"/><text x="0" y="69.4" class="bar-label">5</text><rect x="14" y="60" width="152" height="10" class="bar-track"/><rect x="14" y="60" width="130.3" height="10" class="bar-fill"/></svg></div>
+  <div class="rank-sep"><span class="dot dot-noise" aria-hidden="true"></span>не разделимо (CI пересекаются)</div>
+</div><div class="rank-row">
+  <div class="rank-num">2</div>
+  <div class="rank-label">rtb3: «Если не хочется превращать уход за волосами в отдельный сложный ритуал…»<span class="e-hint" title="Среднее по шкале 1-5 — подробности (CI/PMF) см. приложение">E≈3.23</span></div>
+  <div class="rank-bar"><svg viewBox="0 0 168 73" width="168" height="73" role="img" aria-label="Распределение ответов по шкале от 1 до 5" class="pmf-svg"><text x="0" y="9.4" class="bar-label">1</text><rect x="14" y="0" width="152" height="10" class="bar-track"/><rect x="14" y="0" width="65.1" height="10" class="bar-fill"/><text x="0" y="24.4" class="bar-label">2</text><rect x="14" y="15" width="152" height="10" class="bar-track"/><rect x="14" y="15" width="130.3" height="10" class="bar-fill"/><text x="0" y="39.4" class="bar-label">3</text><rect x="14" y="30" width="152" height="10" class="bar-track"/><rect x="14" y="30" width="108.6" height="10" class="bar-fill"/><text x="0" y="54.4" class="bar-label">4</text><rect x="14" y="45" width="152" height="10" class="bar-track"/><rect x="14" y="45" width="86.9" height="10" class="bar-fill"/><text x="0" y="69.4" class="bar-label">5</text><rect x="14" y="60" width="152" height="10" class="bar-track"/><rect x="14" y="60" width="152.0" height="10" class="bar-fill"/></svg></div>
+  <div class="rank-sep"><span class="dot dot-noise" aria-hidden="true"></span>не разделимо (CI пересекаются)</div>
+</div><div class="rank-row">
+  <div class="rank-num">3</div>
+  <div class="rank-label">rtb2: «Если вы уже разочаровались в громких обещаниях «заново за месяц»…»<span class="e-hint" title="Среднее по шкале 1-5 — подробности (CI/PMF) см. приложение">E≈3.22</span></div>
+  <div class="rank-bar"><svg viewBox="0 0 168 73" width="168" height="73" role="img" aria-label="Распределение ответов по шкале от 1 до 5" class="pmf-svg"><text x="0" y="9.4" class="bar-label">1</text><rect x="14" y="0" width="152" height="10" class="bar-track"/><rect x="14" y="0" width="43.4" height="10" class="bar-fill"/><text x="0" y="24.4" class="bar-label">2</text><rect x="14" y="15" width="152" height="10" class="bar-track"/><rect x="14" y="15" width="152.0" height="10" class="bar-fill"/><text x="0" y="39.4" class="bar-label">3</text><rect x="14" y="30" width="152" height="10" class="bar-track"/><rect x="14" y="30" width="152.0" height="10" class="bar-fill"/><text x="0" y="54.4" class="bar-label">4</text><rect x="14" y="45" width="152" height="10" class="bar-track"/><rect x="14" y="45" width="108.6" height="10" class="bar-fill"/><text x="0" y="69.4" class="bar-label">5</text><rect x="14" y="60" width="152" height="10" class="bar-track"/><rect x="14" y="60" width="130.3" height="10" class="bar-fill"/></svg></div>
+  <div class="rank-sep"><span class="dot dot-noise" aria-hidden="true"></span>не разделимо (CI пересекаются)</div>
+</div><div class="rank-row">
+  <div class="rank-num">4</div>
+  <div class="rank-label">rtb1: «Если переживаете, что активный уход может быть слишком агрессивным…»<span class="e-hint" title="Среднее по шкале 1-5 — подробности (CI/PMF) см. приложение">E≈3.10</span></div>
+  <div class="rank-bar"><svg viewBox="0 0 168 73" width="168" height="73" role="img" aria-label="Распределение ответов по шкале от 1 до 5" class="pmf-svg"><text x="0" y="9.4" class="bar-label">1</text><rect x="14" y="0" width="152" height="10" class="bar-track"/><rect x="14" y="0" width="65.1" height="10" class="bar-fill"/><text x="0" y="24.4" class="bar-label">2</text><rect x="14" y="15" width="152" height="10" class="bar-track"/><rect x="14" y="15" width="152.0" height="10" class="bar-fill"/><text x="0" y="39.4" class="bar-label">3</text><rect x="14" y="30" width="152" height="10" class="bar-track"/><rect x="14" y="30" width="108.6" height="10" class="bar-fill"/><text x="0" y="54.4" class="bar-label">4</text><rect x="14" y="45" width="152" height="10" class="bar-track"/><rect x="14" y="45" width="108.6" height="10" class="bar-fill"/><text x="0" y="69.4" class="bar-label">5</text><rect x="14" y="60" width="152" height="10" class="bar-track"/><rect x="14" y="60" width="108.6" height="10" class="bar-fill"/></svg></div>
+  <div class="rank-sep"><span class="dot dot-none" aria-hidden="true"></span>—</div>
+</div></div>
+</div>
+<p><strong>Качественная интерпретация (полный разбор с цитатами — в разделе «Качественный разбор» файла <code>runs/cjm_hairloss_demo_rtb_20260710-0035/report.md</code>).</strong> rtb4 (прозрачность состава) занял 1-е место в ОБОИХ сегментах, но по разным причинам: у мам — как ответ на тревогу о безопасности при ГВ, у мужчин — как прямое попадание в их способ выбора «по составу, а не по рекламе». rtb2 (честность, без обещания чуда) — самый слабый результат у мам (не касается их главного барьера — безопасности при ГВ) и близок к среднему у мужчин (попадает в их усталость от рекламных сверхобещаний). rtb1 (мягкость/бережность), напротив, входит в тройку у мам, но занимает последнее место у мужчин — «бережно» читается этим сегментом как недостаточно сильное решение для уже заметного поредения. Эта сегментная асимметрия — содержательный вывод пилота: одна и та же формулировка работает по-разному в зависимости от барьера сегмента, что и является ценностью тестирования RTB через панель, а не постулирования одной «лучшей» формулировки, как в исходной цепочке стратегов.</p>
+<p>При N=10 респондентов на сегмент доверительные интервалы у соседних по рейтингу кандидатов почти везде пересекаются (кроме rtb1 vs rtb2 у мам) — на этой выборке уверенно надёжен только относительный порядок и факт различия между сегментами, а не точная величина разрыва между соседними местами (см. раздел 8).</p>
+<hr/>
+<section class="disclaimer-block"><h2>Границы этого отчёта</h2><h3 class="sub-heading">8. Границы этого отчёта</h3><p>Легенда 🟢/🟡/🔴 из раздела 1 остаётся в силе для всех данных выше — этот раздел её не заменяет, а дополняет несъёмными ограничениями метода (текст ниже — стандартный дисклеймерный блок из <code>references/disclaimers.md</code>, копируется дословно и не редактируется точечно под конкретный прогон).</p>
+<h4 class="sub-heading">Границы этого отчёта (общие для панели, режимы 1-4 и segment_map)</h4>
+<ul><li><strong>Режим:</strong> данные получены в persona-режиме синтетической ИИ-панели — это качественная симуляция реакции сегмента, а не наблюдение за реальными людьми и не замена количественному исследованию с реальными респондентами.</li><li><strong>Что надёжно:</strong> относительный порядок и сравнение стимулов — какой клейм или концепт сильнее другого, в каком сегменте разрыв между стимулами больше. Это сильная сторона метода.</li><li><strong>Что не надёжно:</strong> абсолютные значения — доли в процентах, ожидаемые объёмы или частоты потребления, прогноз конверсии в реальные продажи. Эти показатели в отчёте не публикуются и не должны домысливаться из E[шкала] или PMF выше.</li><li><strong>Точность метода:</strong> элиситация ответов через Semantic Similarity Rating (SSR) на валидационном наборе из 57 исследований показывает <strong>R=0,72 (~90% теоретического потолка)</strong>. Потолок — это шум тест-ретест повторяемости у самих людей-респондентов (один и тот же человек не отвечает идентично при повторном опросе), а не «корреляция с реальностью» напрямую. Это не означает «90% точности» в разговорном смысле слова.</li><li><strong>Природа ответа:</strong> по формулировке профессиональной ассоциации AAPOR (Task Force on Responsible AI Integration in Survey Research, 2026), ответ ИИ-агента — это «модельное приближение того, что мог бы сказать человек, а не прямое наблюдение человеческого высказывания»; в лучшем случае синтетические ответы работают как прокси, в худшем — могут систематически искажать представление о симулируемой популяции.</li><li><strong>Что не оценивалось этим отчётом:</strong> сенсорные характеристики (вкус, аромат, текстура — у модели нет физиологического восприятия), медиамикс, Brand Lift, прогноз продаж (требуют реальных данных об экспозиции и транзакциях), частоты и объёмы потребления в абсолютных величинах.</li><li><strong>Маркировка:</strong> это вывод синтетической ИИ-панели. Данные не должны использоваться или преподноситься как данные реальных респондентов ни во внутренних, ни во внешних материалах.</li><li><strong>Прогон (тест RTB, раздел 6.2):</strong> модель — не зафиксирована (agent-режим, temperature_control=false — см. <code>AGENT_TASK.md</code> прогона <code>cjm_hairloss_demo_rtb_20260710-0035</code>), версия эмбеддинг-модели — paraphrase-multilingual-MiniLM-L12-v2, дата — 2026-07-09T21:35:49+00:00 (полный manifest — <code>runs/cjm_hairloss_demo_rtb_20260710-0035/manifest.json</code>). LLM-провайдеры обновляют модели без предупреждения; результат воспроизводимого повторного прогона на новой версии модели не гарантирован — при интерпретации результатов через недели/месяцы стоит планировать повторный прогон, а не считать этот отчёт вечным (см. <code>references/methodology.md</code>, §3.4).</li></ul>
+<h4 class="sub-heading">Границы этого отчёта (карта сегментов / AI CJM)</h4>
+<ul><li><strong>Природа сегментации.</strong> Сегменты и Customer Journey Map в этом отчёте — результат синтетического анализа языковой моделью, а не измерение на реальной аудитории или реальных пациентах. Это структурированная гипотеза о том, как категория могла бы делиться на группы с разной мотивацией и барьерами, — отправная точка для дальнейшей проверки, не готовый вывод о рынке.</li><li><strong>Устойчивость сегментов.</strong> Каждый сегмент ядра получен минимум в 3 независимых прогонах сегментации и несёт метку воспроизводимости (например, «3/3» — подтверждён во всех прогонах, «2/3» — в большинстве). Сегменты с меткой «1/3» вынесены в приложение с пометкой «неустойчивый» и не должны использоваться как основа для решений без дополнительной проверки.</li><li><strong>Проценты и доли.</strong> Ни одна цифра с «%» в этом отчёте не сгенерирована моделью «из головы» — каждая либо имеет тег источника ([BA] / [Mediascope] / [DSM] / [Росстат] / [опрос] / [клиент] — реальные данные), либо прямо помечена как «оценка»/«гипотеза». Отсутствие тега или пометки в строке с процентом — дефект отчёта, а не факт; такие случаи ловит <code>scripts/cjm_lint.py</code> перед сдачей.</li><li><strong>Цитаты.</strong> Реальными помечены только цитаты, прослеженные до переданных вербатимов (соцлистенинг/отзывы, источник указан рядом); всё остальное — синтетическая иллюстрация типичной формулировки сегмента, а не запись реального высказывания. В этом демо-пилоте <code>data_inputs.social_listening</code> не передан — ВСЕ иллюстративные формулировки в разделах 3-4 являются синтетическими иллюстрациями (см. <code>01_segmentation_run1..3.md</code>, <code>02_cjm_*.md</code>), реальных цитат в этом отчёте нет вовсе.</li><li><strong>Независимость прогонов.</strong> Статус независимости сегментации зафиксирован в <code>manifest.json</code> прогона: <code>independence: approximated</code> — последовательные прогоны в одном контексте с явной инструкцией не опираться на предыдущий результат; приближение допустимо только для демо/пилота (как здесь), не для боевой сдачи клиенту.</li><li><strong>Фарма-гейт.</strong> Для препаратов/категорий с рецептурным статусом (<code>vertical: pharma_rx</code>) коммуникация по данному анализу адресована только специалистам здравоохранения (ФЗ-38 ст. 24) — в этом прогоне <code>vertical: pharma_otc</code>, Rx-предупреждение не применяется.</li><li><strong>RTB-кандидаты.</strong> Рейтинг RTB-формулировок в разделе 6.2 — не гипотеза LLM, а результат SSR-теста той же синтетической панели (<code>scripts/run_study.py</code>); на них распространяются те же ограничения, что и на любой другой отчёт панели (относительные выводы, R=0,72 (~90% теоретического потолка), не абсолютные проценты).</li></ul>
+<ul><li><strong>Демо-статус этого конкретного прогона (специфично для ЭТОГО пилота, не часть несъёмного блока выше).</strong> Бренд вымышленный, инструкция — обобщённая демо-инструкция категории (не реальная), данных соцлистенинга и категорийных данных нет, независимость прогонов сегментации — приближённая. Прогон демонстрирует пайплайн end-to-end и НЕ является клиентским выводом о реальном рынке или реальном препарате.</li></ul></section>
+<footer class="page-footer">Синтетическая ИИ-панель — вывод модельного приближения, не наблюдение за реальными людьми. Клиентский HTML сгенерирован автоматически из report.md/cjm_report.md (scripts/render_client.py) без изменения посчитанных цифр.</footer>
+</div>
+</body>
+</html>
