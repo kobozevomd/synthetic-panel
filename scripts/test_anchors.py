@@ -43,19 +43,70 @@ embedding-модель (скачивание с HuggingFace при первом 
       быть "монотонным" в других парах уровней и всё равно проваливать именно переход 4->5
       (или наоборот, проходить (b) в среднем при отдельных немонотонных наборах) — Д2 бьёт
       именно по разлипанию 4/5, поэтому проверяется явно и отдельно от общей монотонности.
-  (c) Rank-recovery: независимый held-out банк синтетических фраз-парафразов уровня k
-      (PARAPHRASE_BANK ниже; ни одна фраза НЕ дублирует anchor_sets — иначе тест был бы
-      циркулярным). Парафразы скорятся ПОЛНЫМ продакшн-пайплайном SSR (среднее по ВСЕМ
-      наборам шкалы разом, как в ssr_core.SSREngine.score_texts — без leave-one-out, это тест
-      на генерализацию за пределы обучающих фраз, а не на взаимную согласованность наборов).
-      Среднее E по группе уровня k обязано строго возрастать k=1..5 на каждой шкале.
+  (c) Rank-recovery: независимый held-out банк синтетических фраз-парафразов уровня k,
+      загружаемый из references/paraphrase_bank_ru.yaml (см. load_paraphrase_bank ниже; ни
+      одна фраза НЕ дублирует anchor_sets ни текстуально, ни на уровне значимых нормализованных
+      словоформ — иначе тест был бы циркулярным, см. check_no_anchor_lexicon_overlap). Парафразы
+      скорятся ПОЛНЫМ продакшн-пайплайном SSR (среднее по ВСЕМ наборам шкалы разом, как в
+      ssr_core.SSREngine.score_texts — без leave-one-out, это тест на генерализацию за пределы
+      обучающих фраз, а не на взаимную согласованность наборов). Среднее E по группе уровня k
+      обязано строго возрастать k=1..5 на каждой шкале.
 
 Гейт зелёный, только если (a) И (b) И (c) выполнены на ВСЕХ шкалах, найденных в файле якорей.
+
+ИСТОРИЯ УСЛОВИЯ (c) — v1.3 -> v1.4 (spec_synthetic-panel_v1.4.md §2.1, чинит находку №2
+docs/review_v1.3.md, MAJOR). До этой правки held-out банк был зашит прямо в этот файл (константа
+PARAPHRASE_BANK): 3-4 фразы на уровень на шкалу, все написаны ОДНИМ автором — тем же, что писал
+и сами anchor_sets. Условие (c) формально уже входило в ScaleGateResult.passed наравне с (a)/(b)
+(код не делал разницы между "жёстким" и "мягким" гейтом), но ЭПИСТЕМИЧЕСКИ было слабым: PASS на
+маленькой одноавторской выборке не давал уверенности, что шкала обобщается на независимо
+сформулированный текст, а не просто на текст, случайно похожий по стилю на anchor_sets того же
+автора (см. review_v1.3.md §1.2 — независимый банк из 3 фраз/уровень получил ДРУГОЙ вердикт по
+паре шкала×эмбеддер, чем банк, зашитый здесь). references/paraphrase_bank_ru.yaml — устранение
+этой находки: >= 10 фраз на уровень на шкалу, с полем `style` (разговорный/сдержанный/
+эмоциональный/краткий/развёрнутый), проверенных программно (не "на глаз") на отсутствие лексики
+anchors_ru.yaml v2. Числа "было/стало" по каждой шкале и каждому эмбеддеру (в т.ч. честно
+зафиксированные слабости, если расширенный банк их вскрыл, — правило "не подгонять порог под
+результат") — docs/rank_recovery_v14.md. Условие (c) как ТАКОВОЕ (строгая монотонность средних
+E по группе уровня) не изменилось — расширился только объём и авторское разнообразие входных
+данных, что и делает PASS/FAIL этого условия статистически весомым, а не просто формально верным.
+
+ИСТОРИЯ УСЛОВИЯ (c) — v1.4 -> v1.4 fix (задание архитектора, 2026-07-19, чинит находку №1
+docs/review_v1.4.md, MAJOR: "rank-recovery... статистически честный критерий"). До этой правки
+условие (c) объявляло FAIL по ГОЛОМУ точечному сравнению средних E соседних уровней
+(mean_e_by_level[k+1] <= mean_e_by_level[k]) — ТА ЖЕ категория ошибки "point-estimate сравнение
+средних без учёта разброса", которую v1.3 уже чинил для отдельного вопроса (разделимость
+стимулов внутри одного прогона, report.py) переходом на парный бутстреп
+(ssr_core.joint_paired_bootstrap_means/pairwise_win_probability, см. модульный докстринг
+report.py). docs/rank_recovery_v14.md §5.2 и независимо docs/review_v1.4.md §1.2 (два разных
+банка, B2 и F1) сами, вручную и ВНЕ гейта, считали бутстреп-вероятность разворота для своих
+проблемных переходов appeal — и оба раза получили P около 0.42-0.44 (близко к шуму 0.5, не к
+уверенному развороту 0.0) — то есть точечный FAIL по букве старого условия (c) статистически
+не отличим от ничьей. Эта правка переносит именно ЭТОТ уже посчитанный вручную бутстреп ВНУТРЬ
+самого гейта (ScaleGateResult.passed), вместо того чтобы он оставался только текстом двух
+документов поверх формально-красного точечного гейта.
+
+Новая логика: для КАЖДОЙ из 4 соседних пар уровней (1,2)/(2,3)/(3,4)/(4,5) считается
+P(инверсия) = доля бутстреп-итераций (ресэмплинг С ВОЗВРАЩЕНИЕМ, ПО ФРАЗАМ held-out банка
+уровня, НЕ по респондентам — см. rank_recovery() и bootstrap_pair_inversion_probability ниже),
+где резэмплированное среднее E уровня k оказывается СТРОГО ВЫШЕ резэмплированного среднего E
+уровня k+1 (то есть "неправильный" порядок). FAIL — только при P(инверсия) >=
+RANK_RECOVERY_INVERSION_CONFIDENCE_THRESHOLD (0.7 — порог ЗАФИКСИРОВАН АРХИТЕКТОРОМ до пересчёта
+чисел этой итерации, меняться в ответ на то, что покажет пересчёт, НЕ должен — та же защита от
+подгонки, что уже действует для самого банка парафразов, см. параграф выше "не подгонять порог
+под результат"). Переход с точечно неверным порядком (mean(k+1) <= mean(k)), но P(инверсия) <
+порога — печатается как WARNING "near-tie, в пределах шума" (см. format_report), НЕ считается
+провалом гейта: ScaleGateResult.passed/rank_recovery.monotonic теперь читают именно
+confident_reversal (P >= порога), а не голый знак разности средних. Числа по обоим банкам
+(B2 — references/paraphrase_bank_ru.yaml, и независимому банку F1) — docs/rank_recovery_v14.md,
+раздел "Критерий (c) v2: бутстреп". Сам банк парафразов и якоря этой правкой НЕ изменены —
+меняется только СТАТИСТИЧЕСКАЯ ОБРАБОТКА уже существующих per-фразовых E-значений.
 """
 
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 import unittest
 from dataclasses import dataclass, field
@@ -75,123 +126,200 @@ import ssr_core  # noqa: E402
 
 DEFAULT_ANCHORS_PATH = _SKILL_ROOT / "references" / "anchors_ru.yaml"
 DEFAULT_CONFIG_PATH = _SKILL_ROOT / "config.yaml"
+DEFAULT_PARAPHRASE_BANK_PATH = _SKILL_ROOT / "references" / "paraphrase_bank_ru.yaml"
 
 LEVELS = (1, 2, 3, 4, 5)
 
+# ============================================================================
+# Критерий (c) v2: бутстреп-порог (см. "ИСТОРИЯ УСЛОВИЯ (c) — v1.4 -> v1.4 fix" в
+# докстринге модуля выше за полным обоснованием). Оба числа ЗАФИКСИРОВАНЫ архитектором
+# 2026-07-19, ДО пересчёта на реальном стеке — менять их в ответ на то, что покажет
+# пересчёт, запрещено (защита от подгонки порога под желаемый результат).
+# ============================================================================
+RANK_RECOVERY_INVERSION_CONFIDENCE_THRESHOLD = 0.7
+RANK_RECOVERY_BOOTSTRAP_ITERS = 5000
+RANK_RECOVERY_BOOTSTRAP_SEED = 42
+
 
 # ============================================================================
-# Held-out банк парафразов для rank-recovery (см. п.(c) в докстринге модуля)
+# Стоп-слова для проверки пересечений с лексикой якорей (см. п.(c) докстринга модуля,
+# check_no_anchor_lexicon_overlap ниже)
 # ============================================================================
 #
-# Написаны ЗАНОВО, без единого повторения фраз из anchor_sets (иначе rank-recovery
-# был бы циркулярным — проверял бы "узнаёт ли модель фразу саму себя", а не
-# "обобщается ли шкала на независимо сформулированный текст ответа"). Соблюдены те
-# же грамматические требования, что и для anchor_sets (см. references/anchors_ru.yaml,
-# преамбула): естественный русский, без брендов/категорий, без прошедшего времени
-# смыслового глагола 1-го лица и кратких прилагательных, согласуемых с родом
-# говорящего ("купил/купила", "готов/готова" и т.п.) — разрешены настоящее/будущее
-# время и безличные конструкции ("нужно подумать", "решено", "зависит от...").
-#
-# Каждый уровень — 4 фразы разного лексического наполнения (не парафразы друг
-# друга внутри уровня, а независимые формулировки одной и той же интенсивности).
-PARAPHRASE_BANK: dict[str, dict[int, list[str]]] = {
-    "purchase_intent": {
-        1: [
-            "Нет, это точно не то, на что я потрачу деньги.",
-            "Даже случайно такое в корзину не положу.",
-            "Ноль шансов, что это когда-нибудь окажется у меня дома.",
-            "Мимо, совсем не тот случай, чтобы платить за это.",
-        ],
-        2: [
-            "Скорее пройду мимо, но чисто теоретически бывает и передумаю.",
-            "Не горю желанием, разве что случай подвернётся особый.",
-            "Маловероятно, что дойдёт до кассы с этим в руках.",
-            "Не сказать что совсем нет, но шансы небольшие.",
-        ],
-        3: [
-            "Сложно сказать сразу, нужно ещё подумать над этим.",
-            "50 на 50, зависит от настроения и от цены.",
-            "Пока сложно определиться, нужно взвесить все за и против.",
-            "Однозначного мнения пока нет, есть и за, и против.",
-        ],
-        4: [
-            "В целом склоняюсь к покупке, хотя ещё есть пара вопросов.",
-            "Скорее всего возьму, но сначала хочется сравнить с другими вариантами.",
-            "Настрой положительный, скорее всего куплю, но чуть позже определюсь окончательно.",
-            "Практически решено в пользу покупки, но маленькое сомнение остаётся.",
-        ],
-        5: [
-            "Да, однозначно, беру прямо сейчас.",
-            "Беру сразу, вопрос для меня уже закрыт.",
-            "Это стопроцентное да, оформляю покупку сейчас же.",
-            "Всё, решено — покупаю, и точка.",
-        ],
-    },
-    "appeal": {
-        1: [
-            "Ничего не откликается, взгляд сразу скользит дальше.",
-            "Совсем не моё, никакого желания смотреть повторно.",
-            "Реакция нулевая, только пожимаю плечами.",
-            "Отталкивает, даже не хочется задерживать взгляд.",
-        ],
-        2: [
-            "Не особо цепляет, хотя что-то отдалённо симпатичное есть.",
-            "Скорее равнодушно, чем с интересом смотрю на это.",
-            "Слабенько, без огонька, но и не раздражает совсем.",
-            "Так, ничего выдающегося, реакция сдержанная.",
-        ],
-        3: [
-            "Ни восторга, ни разочарования — ровное отношение.",
-            "Обычное дело, ничего особенного не откликается внутри.",
-            "Смотрю спокойно, без явных эмоций в любую сторону.",
-            "Пятьдесят на пятьдесят: что-то нравится, что-то не очень.",
-        ],
-        4: [
-            "В целом симпатично, хотя кое-что смущает при первом взгляде.",
-            "Приятное чувство возникает, но не без маленькой оговорки.",
-            "Многое подкупает, только один нюанс слегка портит впечатление.",
-            "Отклик скорее тёплый, чем прохладный, с небольшим но.",
-        ],
-        5: [
-            "Восторг полный, влюбляюсь с первого взгляда.",
-            "Это огонь, нравится безоговорочно и сразу.",
-            "Абсолютный восторг, обожаю с первого мгновения.",
-            "Однозначно да, эмоция сильнейшая и никакого но.",
-        ],
-    },
-    "relevance": {
-        1: [
-            "Абсолютно чужая история, ко мне вообще не относится.",
-            "Ничего общего с моей жизнью не нахожу совсем.",
-            "Мимо на сто процентов, это не обо мне.",
-            "Не узнаю себя тут ни в одной детали.",
-        ],
-        2: [
-            "Скорее не моя ситуация, хотя что-то отдалённо знакомое мелькает.",
-            "Мало пересечений с моей жизнью, разве что по мелочи.",
-            "В основном не про меня, лишь пара деталей совпадает случайно.",
-            "Слабое совпадение, больше похоже на чужую историю.",
-        ],
-        3: [
-            "Отчасти похоже на мою ситуацию, отчасти нет вовсе.",
-            "Наполовину моя история, наполовину что-то постороннее.",
-            "Смотря с какой стороны посмотреть — где-то да, где-то нет.",
-            "Есть и совпадения, и явные несовпадения с моей жизнью.",
-        ],
-        4: [
-            "В основном это про меня, но пара моментов всё же не совпадает.",
-            "Многое узнаю в этом, хотя не всё сходится один в один.",
-            "Близко к моей истории, только детали местами расходятся.",
-            "По большей части похоже на меня, с небольшой оговоркой.",
-        ],
-        5: [
-            "Это стопроцентно про меня, вплоть до мелочей.",
-            "Моя история один в один, точно про меня.",
-            "Узнаю себя абсолютно во всём, прямо зеркало.",
-            "Это точно обо мне, и вопрос тут закрыт.",
-        ],
-    },
-}
+# Функциональные слова русского языка: местоимения/определители, союзы/частицы,
+# предлоги, обобщённые модальные/степенные наречия и связки-вспомогательные глаголы.
+# НЕ включены слова с конкретным, различимым смыслом шкалы (например "актуально",
+# "случай", "впечатление", "нравится", "куплю" — это и есть значимая лексика, которую
+# банк парафразов обязан НЕ повторять). Список СОЗНАТЕЛЬНО щедрый на обобщённые
+# модальные/степенные слова ("очень", "совсем", "вполне", "похоже", "отчасти", "точно"
+# в смысле "наверное/для верности") — без этого послабления невозможно сформулировать
+# естественную русскую фразу о степени/уверенности без "пересечения" с якорями, а сама
+# проверка потеряла бы смысл (ловила бы неизбежное, а не отличимое). Проверка —
+# СЛОВОФОРМЕННАЯ (нормализация: нижний регистр + ё->е + разбиение на буквенные токены),
+# НЕ лемма-уровня — по заданию спецификации (spec_synthetic-panel_v1.4.md §2.1) этого
+# достаточно: "покупка"/"куплю" НЕ считаются пересечением, хотя однокоренные, а вот
+# буквальное "куплю" в банке парафразов запрещено, потому что это ТОЧНО ТА ЖЕ словоформа,
+# что и в anchor_sets.
+STOPWORDS_RU: frozenset[str] = frozenset({
+    # местоимения / определители
+    "я", "мы", "ты", "вы", "он", "она", "оно", "они", "меня", "мне", "мной", "мною",
+    "тебя", "тебе", "тобой", "его", "ее", "её", "ему", "ей", "им", "их", "него", "неё",
+    "нему", "ним", "нам", "нас", "вами", "вам", "вас", "себя", "себе", "собой", "кто",
+    "что", "чей", "чья", "чьё", "чьи", "чьих", "который", "которая", "которое",
+    "которые", "которого", "которой", "этот", "эта", "это", "эти", "этого", "этой",
+    "этому", "этим", "этих", "этом", "эту", "того", "той", "тех", "тем", "таков",
+    "такова", "такой", "такая", "такое", "такие", "такого", "такую", "весь", "вся",
+    "всё", "все", "всего", "всей", "всех", "всем", "всею", "всеми", "сам", "сама",
+    "само", "сами", "свой", "своя", "своё", "свои", "своего", "своей", "своих", "своим",
+    "каждый", "каждая", "каждое", "каждые", "любой", "любая", "любое", "любые",
+    "любого", "любому", "любым", "любую", "любом", "любыми", "любых", "никто", "ничто",
+    "никакой", "никакая", "никакое", "кое", "какой", "какая", "какое", "какие", "иной",
+    "иная", "иное", "другой", "другая", "другое", "одно", "один", "одна", "некоторый",
+    "некоторая", "несколько", "многие", "мой", "моя", "моё", "мое", "мои", "моего",
+    "моей", "моих", "моим", "моими", "мою", "твой", "твоя", "твоё", "твое", "твои",
+    "всякий", "всякая", "всякое", "всякие", "всяких", "всяким", "всякими",
+    # союзы / частицы
+    "и", "а", "но", "или", "либо", "чтобы", "как", "будто", "словно", "если", "же",
+    "ли", "бы", "б", "да", "нет", "не", "ни", "вот", "ну", "уже", "ещё", "еще",
+    "только", "лишь", "просто", "там", "тут", "здесь", "туда", "сюда", "оттуда",
+    "отсюда", "потом", "затем", "тогда", "когда", "где", "куда", "откуда", "почему",
+    "зачем", "отчего", "итак", "притом", "причём", "причем", "хотя", "пускай", "пусть",
+    "разве", "неужели", "якобы", "чтоб", "дабы", "то", "ведь", "мол", "де", "аж",
+    "опять", "снова", "заново",
+    # предлоги
+    "в", "во", "на", "с", "со", "к", "ко", "у", "о", "об", "обо", "от", "ото", "до",
+    "из", "изо", "за", "над", "надо", "под", "подо", "при", "для", "без", "безо",
+    "через", "чрез", "между", "меж", "про", "по", "ради", "вместо", "кроме", "среди",
+    "вокруг", "около", "внутри", "вдоль", "поперёк", "поперек", "согласно",
+    "благодаря", "несмотря",
+    # обобщённые модальные/степенные наречия и связки — генерические усилители/хеджи,
+    # неизбежные в любой русской речи о степени/уверенности, не несут ОТЛИЧИТЕЛЬНОГО
+    # смысла конкретной шкалы (в отличие от "актуально"/"случай"/"впечатление" и т.п.)
+    "очень", "совсем", "совершенно", "вообще", "реально", "действительно", "прямо",
+    "просто", "слегка", "немного", "чуть", "довольно", "вполне", "скорее", "отчасти",
+    "наверное", "возможно", "может", "быть", "вроде", "кажется", "похоже", "примерно",
+    "точно", "явно", "видимо", "пожалуй", "буквально", "практически", "полностью",
+    "абсолютно", "максимально", "особо", "особенно", "весьма", "крайне",
+    "чрезвычайно", "целиком", "есть", "был", "была", "было", "были", "будет", "будут",
+    "стать", "станет", "нужно", "надо", "можно", "нельзя", "стоит",
+})
+
+
+def normalize_significant_tokens(text: str) -> frozenset[str]:
+    """Нижний регистр + ё->е + буквенные токены (regex), минус STOPWORDS_RU. Ровно та
+    нормализация, которую спецификация называет достаточной ("лемма-уровень не нужен,
+    достаточно нормализованных словоформ существенных слов", spec_synthetic-panel_v1.4.md
+    §2.1) — НЕ стемминг и НЕ лемматизация, только буквальные словоформы за вычетом
+    служебных слов."""
+    normalized = text.lower().replace("ё", "е")
+    words = re.findall(r"[а-я]+", normalized)
+    return frozenset(w for w in words if w not in STOPWORDS_RU)
+
+
+def anchor_lexicon(anchors_path: Path | str = DEFAULT_ANCHORS_PATH) -> frozenset[str]:
+    """Множество значимых (не служебных) нормализованных словоформ, встречающихся в
+    ЛЮБОЙ фразе ЛЮБОГО anchor_sets ЛЮБОЙ шкалы anchors_ru.yaml (не только `question`/
+    `comment` — те не идут в промпт скоринга и не участвуют в SSR-математике, поэтому
+    не проверяются). Это и есть "лексика якорей v2" из §2.1 spec_synthetic-panel_v1.4.md,
+    вычисленная программно из реального файла, а не заданная руками."""
+    path = Path(anchors_path)
+    with path.open("r", encoding="utf-8") as f:
+        data = yaml.safe_load(f) or {}
+    scales = data.get("scales", data) if isinstance(data, Mapping) else {}
+    vocab: set[str] = set()
+    for scale in scales.values():
+        for aset in scale.get("anchor_sets", []) or []:
+            for _, text in (aset.get("phrases", {}) or {}).items():
+                vocab |= normalize_significant_tokens(str(text))
+    return frozenset(vocab)
+
+
+@dataclass
+class LexiconOverlapViolation:
+    scale_id: str
+    level: int
+    style: str
+    text: str
+    overlap_tokens: tuple[str, ...]
+
+
+def check_no_anchor_lexicon_overlap(
+    paraphrase_bank_raw: Mapping[str, Mapping[int, Sequence[Mapping[str, str]]]],
+    anchors_path: Path | str = DEFAULT_ANCHORS_PATH,
+) -> list[LexiconOverlapViolation]:
+    """Условие независимости банка (см. докстринг модуля, п.(c)): ни одна фраза банка
+    парафразов не должна содержать значимую (не служебную) словоформу, встречающуюся
+    где-либо в anchors_ru.yaml. Возвращает список нарушений (пустой список = чисто).
+    Принимает "сырую" структуру банка (load_paraphrase_bank_raw) — нужно поле `style`
+    для диагностики, поэтому не text-only load_paraphrase_bank."""
+    vocab = anchor_lexicon(anchors_path)
+    violations: list[LexiconOverlapViolation] = []
+    for scale_id, levels in paraphrase_bank_raw.items():
+        for level, items in levels.items():
+            for item in items:
+                tokens = normalize_significant_tokens(item["text"])
+                overlap = tokens & vocab
+                if overlap:
+                    violations.append(
+                        LexiconOverlapViolation(
+                            scale_id=scale_id,
+                            level=int(level),
+                            style=item.get("style", "?"),
+                            text=item["text"],
+                            overlap_tokens=tuple(sorted(overlap)),
+                        )
+                    )
+    return violations
+
+
+# ============================================================================
+# Банк парафразов для rank-recovery (см. п.(c) в докстринге модуля) — v1.4:
+# ЗАГРУЖАЕТСЯ из references/paraphrase_bank_ru.yaml, больше не зашит в этот файл
+# (spec_synthetic-panel_v1.4.md §2.1 — см. историю условия (c) в докстринге модуля).
+# ============================================================================
+
+
+def load_paraphrase_bank_raw(
+    path: Path | str = DEFAULT_PARAPHRASE_BANK_PATH,
+) -> dict[str, dict[int, list[dict[str, str]]]]:
+    """Полная структура references/paraphrase_bank_ru.yaml: {scale: {level: [{"text",
+    "style"}, ...]}}. Используется там, где нужно поле `style` (диагностика,
+    check_no_anchor_lexicon_overlap, структурные тесты) — для самого rank-recovery
+    (нужен только текст) см. load_paraphrase_bank ниже."""
+    p = Path(path)
+    with p.open("r", encoding="utf-8") as f:
+        data = yaml.safe_load(f) or {}
+    meta = data.get("meta", {}) or {}
+    min_per_level = int(meta.get("min_phrases_per_level", 10))
+    scales = data.get("scales", {}) or {}
+    bank: dict[str, dict[int, list[dict[str, str]]]] = {}
+    for scale_id, scale in scales.items():
+        levels_raw = (scale or {}).get("levels", {}) or {}
+        levels: dict[int, list[dict[str, str]]] = {}
+        for lvl in LEVELS:
+            items = list(levels_raw.get(lvl) or [])
+            if len(items) < min_per_level:
+                raise ValueError(
+                    f"{p}: шкала '{scale_id}', уровень {lvl} — {len(items)} фраз(ы) "
+                    f"< min_phrases_per_level={min_per_level} (meta.min_phrases_per_level)."
+                )
+            levels[lvl] = items
+        bank[scale_id] = levels
+    return bank
+
+
+def load_paraphrase_bank(
+    path: Path | str = DEFAULT_PARAPHRASE_BANK_PATH,
+) -> dict[str, dict[int, list[str]]]:
+    """Текстовая проекция load_paraphrase_bank_raw — {scale: {level: [text, ...]}},
+    ровно тот формат, который принимает rank_recovery()/evaluate_scale() ниже (поле
+    `style` для самой SSR-математики не нужно, только для диагностики/структурных
+    проверок банка, см. load_paraphrase_bank_raw)."""
+    raw = load_paraphrase_bank_raw(path)
+    return {
+        scale_id: {lvl: [item["text"] for item in items] for lvl, items in levels.items()}
+        for scale_id, levels in raw.items()
+    }
 
 
 # ============================================================================
@@ -212,13 +340,61 @@ class SetMonotonicityResult:
 
 
 @dataclass
+class RankRecoveryTransition:
+    """
+    Один переход (уровень k -> уровень k+1) условия (c) v2 (см. "ИСТОРИЯ УСЛОВИЯ (c) —
+    v1.4 -> v1.4 fix" в докстринге модуля). `p_inversion` — доля бутстреп-итераций, где
+    резэмплированное среднее E уровня k СТРОГО ВЫШЕ резэмплированного среднего уровня k+1
+    (т.е. "неправильный" порядок) — см. bootstrap_pair_inversion_probability.
+    """
+
+    level_from: int
+    level_to: int
+    point_diff: float  # mean_e_by_level[level_to] - mean_e_by_level[level_from] (точечная оценка)
+    p_inversion: float
+
+    @property
+    def confident_reversal(self) -> bool:
+        """FAIL этого перехода — П(инверсия) >= порога, зафиксированного архитектором
+        (RANK_RECOVERY_INVERSION_CONFIDENCE_THRESHOLD). Единственное условие провала
+        конкретного перехода в v2 — НЕ знак point_diff сам по себе."""
+        return self.p_inversion >= RANK_RECOVERY_INVERSION_CONFIDENCE_THRESHOLD
+
+    @property
+    def near_tie(self) -> bool:
+        """Точечно порядок выглядит неверным (point_diff <= 0 — по старому, точечному
+        критерию v1.4 это был бы FAIL), но бутстреп не даёт уверенности в развороте —
+        печатается как предупреждение (format_report), не проваливает гейт."""
+        return self.point_diff <= 0 and not self.confident_reversal
+
+
+@dataclass
 class RankRecoveryResult:
     mean_e_by_level: list[float]  # индекс 0..4 = уровень 1..5
-    violations: list[tuple[int, int]]
+    e_values_by_level: dict[int, list[float]]  # сырые per-фразовые E — вход бутстрепа
+    transitions: list[RankRecoveryTransition]  # все 4 соседних перехода, всегда заполнены
+    bootstrap_iters: int
+    bootstrap_seed: int
+
+    @property
+    def confident_reversals(self) -> list[tuple[int, int]]:
+        """Единственное, что проваливает гейт условия (c) v2 — переходы с УВЕРЕННЫМ
+        (P >= порога) разворотом. Имя `violations` сохранено как алиас ниже для обратной
+        совместимости мест, ожидающих старое имя (format_report/embedder_ab.py читают
+        через .monotonic, не напрямую .violations, но алиас безопаснее менять молча)."""
+        return [(t.level_from, t.level_to) for t in self.transitions if t.confident_reversal]
+
+    @property
+    def violations(self) -> list[tuple[int, int]]:
+        return self.confident_reversals
+
+    @property
+    def near_ties(self) -> list[RankRecoveryTransition]:
+        return [t for t in self.transitions if t.near_tie]
 
     @property
     def monotonic(self) -> bool:
-        return len(self.violations) == 0
+        return len(self.confident_reversals) == 0
 
 
 @dataclass
@@ -385,6 +561,43 @@ def leave_one_set_out_monotonicity(
     return results
 
 
+def bootstrap_pair_inversion_probability(
+    e_values_from: Sequence[float],
+    e_values_to: Sequence[float],
+    n_iters: int = RANK_RECOVERY_BOOTSTRAP_ITERS,
+    seed: int = RANK_RECOVERY_BOOTSTRAP_SEED,
+) -> float:
+    """
+    P(инверсия) для ОДНОГО перехода (уровень k -> уровень k+1) условия (c) v2 — см.
+    "ИСТОРИЯ УСЛОВИЯ (c) — v1.4 -> v1.4 fix" в докстринге модуля. Ресэмплинг С
+    ВОЗВРАЩЕНИЕМ, ПО ФРАЗАМ (не по респондентам — в отличие от
+    ssr_core.joint_paired_bootstrap_means, который резэмплирует респондентов для
+    ПАРНОГО сравнения нескольких стимулов ОДНОГО прогона). Здесь пары нет: фразы
+    уровня k и уровня k+1 — два НЕЗАВИСИМЫХ множества (разных, возможно разного
+    размера — банк F1 §1 review_v1.4.md использует 5 фраз/уровень, банк B2 — 10),
+    без естественного соответствия "фраза i уровня k" <-> "фраза i уровня k+1",
+    поэтому резэмплирование НЕЗАВИСИМОЕ для каждого уровня (не joint-paired).
+
+    Один `rng`, использованный ПОСЛЕДОВАТЕЛЬНО (сначала индексы уровня k, потом
+    уровня k+1) — детерминировано при фиксированном seed (тот же принцип
+    воспроизводимости, что и everywhere в ssr_core.py: `np.random.default_rng(seed)`).
+
+    Возвращает долю итераций, где резэмплированное среднее уровня k СТРОГО ВЫШЕ
+    резэмплированного среднего уровня k+1 (то есть "неправильный", инвертированный
+    порядок — по конструкции шкалы уровень k+1 обязан быть силнее/выше уровня k).
+    """
+    a = np.asarray(e_values_from, dtype=np.float64)
+    b = np.asarray(e_values_to, dtype=np.float64)
+    if a.size == 0 or b.size == 0:
+        raise ValueError("bootstrap_pair_inversion_probability: пустой массив E-значений уровня")
+    rng = np.random.default_rng(seed)
+    idx_a = rng.integers(0, a.size, size=(n_iters, a.size))
+    idx_b = rng.integers(0, b.size, size=(n_iters, b.size))
+    means_a = a[idx_a].mean(axis=1)
+    means_b = b[idx_b].mean(axis=1)
+    return float(np.mean(means_a > means_b))
+
+
 def rank_recovery(
     paraphrase_bank_scale: Mapping[int, Sequence[str]],
     anchor_sets: Sequence[Mapping[int, str]],
@@ -392,14 +605,21 @@ def rank_recovery(
     anchor_backend: Optional[ssr_core.EmbeddingBackend] = None,
     epsilon: float = 0.001,
     pmf_temperature: float = 1.0,
+    bootstrap_iters: int = RANK_RECOVERY_BOOTSTRAP_ITERS,
+    bootstrap_seed: int = RANK_RECOVERY_BOOTSTRAP_SEED,
 ) -> RankRecoveryResult:
-    """Условие (c) гейта — см. докстринг модуля. Скорит held-out парафразы ПОЛНЫМ
-    ансамблем всех наборов шкалы разом (как в продакшн-пайплайне ssr_core.SSREngine),
-    без leave-one-out — тест на генерализацию, а не на взаимную согласованность."""
+    """Условие (c) гейта, v2 (бутстреп) — см. докстринг модуля. Скорит held-out
+    парафразы ПОЛНЫМ ансамблем всех наборов шкалы разом (как в продакшн-пайплайне
+    ssr_core.SSREngine), без leave-one-out — тест на генерализацию, а не на
+    взаимную согласованность. В отличие от v1.4 (точечное сравнение средних),
+    для каждого из 4 соседних переходов ДОПОЛНИТЕЛЬНО считается бутстреп
+    P(инверсия) (см. bootstrap_pair_inversion_probability) — FAIL гейта даёт
+    только УВЕРЕННЫЙ разворот (P >= RANK_RECOVERY_INVERSION_CONFIDENCE_THRESHOLD)."""
     anchor_backend = anchor_backend or response_backend
     doc_embs_by_set = [anchor_backend.encode([s[lvl] for lvl in LEVELS]) for s in anchor_sets]
 
-    mean_e_by_level = []
+    mean_e_by_level: list[float] = []
+    e_values_by_level: dict[int, list[float]] = {}
     for lvl in LEVELS:
         texts = list(paraphrase_bank_scale[lvl])
         response_embs = response_backend.encode(texts)
@@ -409,11 +629,32 @@ def rank_recovery(
         ]
         avg_pmf = ssr_core.average_pmfs(per_set_pmfs)
         e_vals = ssr_core.expected_value(avg_pmf).flatten()
+        e_values_by_level[lvl] = e_vals.tolist()
         mean_e_by_level.append(float(e_vals.mean()))
 
-    diffs = [mean_e_by_level[k + 1] - mean_e_by_level[k] for k in range(4)]
-    violations = [(k + 1, k + 2) for k, d in enumerate(diffs) if d <= 0]
-    return RankRecoveryResult(mean_e_by_level=mean_e_by_level, violations=violations)
+    transitions: list[RankRecoveryTransition] = []
+    for k in range(4):
+        lvl_from, lvl_to = LEVELS[k], LEVELS[k + 1]
+        p_inversion = bootstrap_pair_inversion_probability(
+            e_values_by_level[lvl_from],
+            e_values_by_level[lvl_to],
+            n_iters=bootstrap_iters,
+            seed=bootstrap_seed,
+        )
+        point_diff = mean_e_by_level[k + 1] - mean_e_by_level[k]
+        transitions.append(
+            RankRecoveryTransition(
+                level_from=lvl_from, level_to=lvl_to, point_diff=point_diff, p_inversion=p_inversion
+            )
+        )
+
+    return RankRecoveryResult(
+        mean_e_by_level=mean_e_by_level,
+        e_values_by_level=e_values_by_level,
+        transitions=transitions,
+        bootstrap_iters=bootstrap_iters,
+        bootstrap_seed=bootstrap_seed,
+    )
 
 
 def evaluate_scale(
@@ -427,11 +668,17 @@ def evaluate_scale(
     labels: Optional[Sequence[str]] = None,
     paraphrase_bank: Optional[Mapping[str, Mapping[int, Sequence[str]]]] = None,
 ) -> ScaleGateResult:
-    bank = (paraphrase_bank or PARAPHRASE_BANK).get(scale_id)
+    # v1.4: банк парафразов больше не хардкод в этом файле — по умолчанию грузится из
+    # references/paraphrase_bank_ru.yaml (>= 10 фраз/уровень, см. load_paraphrase_bank).
+    # evaluate_gate() резолвит и передаёт готовый bank на все шкалы разом (один парс YAML,
+    # не по разу на шкалу) — прямой вызов evaluate_scale() без явного paraphrase_bank всё
+    # равно подхватит тот же дефолт, просто перечитает файл.
+    resolved_bank = paraphrase_bank if paraphrase_bank is not None else load_paraphrase_bank()
+    bank = resolved_bank.get(scale_id)
     if not bank:
         raise KeyError(
-            f"Нет банка парафразов для rank-recovery шкалы '{scale_id}' в PARAPHRASE_BANK "
-            f"(test_anchors.py) — добавьте 4+ фразы на каждый уровень 1..5."
+            f"Нет банка парафразов для rank-recovery шкалы '{scale_id}' в "
+            f"references/paraphrase_bank_ru.yaml — добавьте >= 10 фраз на каждый уровень 1..5."
         )
     set_results = leave_one_set_out_monotonicity(
         anchor_sets, response_backend, anchor_backend, epsilon, pmf_temperature, labels
@@ -457,6 +704,10 @@ def evaluate_gate(
     """Прогоняет весь гейт §1.2 п.2 на ВСЕХ шкалах, найденных в anchors_path."""
     if response_backend is None:
         raise ValueError("evaluate_gate: нужен response_backend (EmbeddingBackend)")
+    # Резолвим банк парафразов ОДИН раз для всего прогона (не по разу на шкалу) — если
+    # paraphrase_bank не передан явно, грузим references/paraphrase_bank_ru.yaml (дефолтный
+    # путь DEFAULT_PARAPHRASE_BANK_PATH, v1.4: >= 10 фраз/уровень, полноценный гейт условия (c)).
+    resolved_bank = paraphrase_bank if paraphrase_bank is not None else load_paraphrase_bank()
     report = GateReport(model_name=model_name, prefix=prefix)
     for scale_id in discover_scale_ids(anchors_path):
         _, anchor_sets = ssr_core.load_anchor_sets(anchors_path, scale_id)
@@ -509,9 +760,25 @@ def format_report(report: GateReport, verbose: bool = True) -> str:
         )
         rr_str = " -> ".join(f"{v:.3f}" for v in sr.rank_recovery.mean_e_by_level)
         lines.append(
-            f"  Rank-recovery (held-out парафразы) E(1..5) = {rr_str} "
-            f"-> {'PASS' if sr.rank_recovery.monotonic else f'FAIL {sr.rank_recovery.violations}'}"
+            f"  Rank-recovery (held-out парафразы, критерий (c) v2: бутстреп по фразам, "
+            f"{sr.rank_recovery.bootstrap_iters} итераций, seed={sr.rank_recovery.bootstrap_seed}) "
+            f"E(1..5) = {rr_str} "
+            f"-> {'PASS' if sr.rank_recovery.monotonic else f'FAIL (уверенный разворот) {sr.rank_recovery.confident_reversals}'}"
         )
+        for t in sr.rank_recovery.transitions:
+            if t.confident_reversal:
+                lines.append(
+                    f"    Переход ({t.level_from},{t.level_to}): точечно {t.point_diff:+.3f}, "
+                    f"бутстреп P(инверсия)={t.p_inversion:.3f} >= "
+                    f"{RANK_RECOVERY_INVERSION_CONFIDENCE_THRESHOLD:.2f} -> УВЕРЕННЫЙ РАЗВОРОТ (FAIL)"
+                )
+            elif t.near_tie:
+                lines.append(
+                    f"    Переход ({t.level_from},{t.level_to}): точечно {t.point_diff:+.3f} "
+                    f"(немонотонно по букве старого точечного критерия), но бутстреп "
+                    f"P(инверсия)={t.p_inversion:.3f} < {RANK_RECOVERY_INVERSION_CONFIDENCE_THRESHOLD:.2f} "
+                    f"-> WARNING: near-tie, в пределах шума (не провал)"
+                )
         lines.append(f"  ИТОГ шкалы '{scale_id}': {'PASS' if sr.passed else 'FAIL'}")
     lines.append("")
     lines.append(f"=== ОБЩИЙ ВЕРДИКТ ГЕЙТА: {'PASS' if report.passed else 'FAIL'} ===")
@@ -527,6 +794,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Гейт монотонности якорных наборов SSR (§1.2 п.2)")
     parser.add_argument("--anchors", default=str(DEFAULT_ANCHORS_PATH), help="Путь к anchors_ru.yaml")
     parser.add_argument("--config", default=str(DEFAULT_CONFIG_PATH), help="Путь к config.yaml (дефолты)")
+    parser.add_argument(
+        "--paraphrase-bank",
+        default=str(DEFAULT_PARAPHRASE_BANK_PATH),
+        help="Путь к paraphrase_bank_ru.yaml (банк held-out парафразов для условия (c), v1.4)",
+    )
     parser.add_argument("--model", default=None, help="HF-имя embedding-модели (иначе — из config.yaml)")
     parser.add_argument("--prefix", default=None, help="Префикс перед кодированием (иначе — из config.yaml)")
     parser.add_argument("--device", default=None, help="cpu/cuda/mps (иначе — из config.yaml)")
@@ -559,6 +831,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     print(f"Загружаю эмбеддер: {model} (prefix={prefix!r}, device={device})...", file=sys.stderr)
     backend = build_backend(model, prefix, device)
+    paraphrase_bank = load_paraphrase_bank(args.paraphrase_bank)
     report = evaluate_gate(
         anchors_path=args.anchors,
         response_backend=backend,
@@ -567,6 +840,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         min_anchor_sets=ssr_cfg["min_anchor_sets"],
         model_name=model,
         prefix=prefix,
+        paraphrase_bank=paraphrase_bank,
     )
     print(format_report(report, verbose=args.verbose))
     return 0 if report.passed else 1
@@ -613,36 +887,101 @@ class TestAnchorGateOnConfiguredStack(unittest.TestCase):
 
 
 class TestParaphraseBankIntegrity(unittest.TestCase):
-    """Быстрые проверки самого банка парафразов (без эмбеддингов, чисто структурные)."""
+    """Быстрые структурные проверки references/paraphrase_bank_ru.yaml (БЕЗ эмбеддингов,
+    без сети) — условие (c) гейта (rank_recovery, TestAnchorGateOnConfiguredStack) доверяет
+    этим свойствам банка МОЛЧА (не перепроверяет их на каждый прогон), поэтому они должны
+    быть гарантированы отдельно и всегда идти зелёными, даже если TestAnchorGateOnConfiguredStack
+    пропущен (нет сети/модели не в кэше)."""
 
-    def test_every_scale_has_all_five_levels_with_enough_phrases(self):
+    @classmethod
+    def setUpClass(cls):
+        cls.raw_bank = load_paraphrase_bank_raw()
+        with Path(DEFAULT_PARAPHRASE_BANK_PATH).open("r", encoding="utf-8") as f:
+            cls.meta = (yaml.safe_load(f) or {}).get("meta", {}) or {}
+
+    def test_every_scale_from_anchors_has_bank_with_all_five_levels(self):
         for scale_id in discover_scale_ids():
-            self.assertIn(scale_id, PARAPHRASE_BANK, f"нет банка парафразов для шкалы {scale_id}")
-            bank = PARAPHRASE_BANK[scale_id]
+            self.assertIn(scale_id, self.raw_bank, f"нет банка парафразов для шкалы {scale_id}")
+            bank = self.raw_bank[scale_id]
             for lvl in LEVELS:
                 self.assertIn(lvl, bank, f"{scale_id}: нет уровня {lvl} в банке парафразов")
+
+    def test_at_least_ten_phrases_per_level_per_scale(self):
+        # Жёсткий пол >= 10 (spec_synthetic-panel_v1.4.md §2.1), НЕ просто "что скажет meta" —
+        # так правка meta.min_phrases_per_level в сторону уменьшения не тихо ослабляет контракт.
+        for scale_id, levels in self.raw_bank.items():
+            for lvl, items in levels.items():
                 self.assertGreaterEqual(
-                    len(bank[lvl]), 2, f"{scale_id}[{lvl}]: меньше 2 фраз в банке парафразов"
+                    len(items), 10, f"{scale_id}[{lvl}]: {len(items)} фраз(ы) < 10 (spec §2.1 минимум)"
                 )
 
-    def test_paraphrases_do_not_duplicate_anchor_phrases(self):
+    def test_style_field_present_and_within_declared_vocabulary(self):
+        allowed_styles = set(self.meta.get("styles") or [])
+        self.assertTrue(allowed_styles, "meta.styles пуст или отсутствует в paraphrase_bank_ru.yaml")
+        for scale_id, levels in self.raw_bank.items():
+            for lvl, items in levels.items():
+                for item in items:
+                    style = item.get("style")
+                    self.assertIn(
+                        style,
+                        allowed_styles,
+                        f"{scale_id}[{lvl}]: стиль {style!r} не из meta.styles {sorted(allowed_styles)} "
+                        f"(фраза: {item.get('text')!r})",
+                    )
+
+    def test_no_exact_duplicate_texts_within_bank(self):
+        for scale_id, levels in self.raw_bank.items():
+            seen: dict[str, tuple[int, str]] = {}
+            for lvl, items in levels.items():
+                for item in items:
+                    text = item["text"]
+                    if text in seen:
+                        self.fail(
+                            f"{scale_id}: фраза {text!r} повторяется дословно на уровнях "
+                            f"{seen[text][0]} ({seen[text][1]}) и {lvl} ({item['style']})"
+                        )
+                    seen[text] = (lvl, item["style"])
+
+    def test_paraphrases_do_not_duplicate_anchor_phrases_verbatim(self):
         anchors_path = DEFAULT_ANCHORS_PATH
         for scale_id in discover_scale_ids(anchors_path):
             _, anchor_sets = ssr_core.load_anchor_sets(anchors_path, scale_id)
             anchor_texts = {s[lvl] for s in anchor_sets for lvl in LEVELS}
-            bank = PARAPHRASE_BANK.get(scale_id, {})
-            for lvl, texts in bank.items():
-                for t in texts:
+            bank = self.raw_bank.get(scale_id, {})
+            for lvl, items in bank.items():
+                for item in items:
                     self.assertNotIn(
-                        t, anchor_texts, f"{scale_id}[{lvl}]: парафраз дублирует anchor_sets дословно: {t!r}"
+                        item["text"],
+                        anchor_texts,
+                        f"{scale_id}[{lvl}]: парафраз дублирует anchor_sets дословно: {item['text']!r}",
                     )
+
+    def test_paraphrase_bank_has_no_anchor_lexicon_overlap(self):
+        """ГЛАВНАЯ проверка независимости банка (spec_synthetic-panel_v1.4.md §2.1: "БЕЗ
+        лексики якорей v2 — проверить пересечения программно"). Если это красное — правка
+        банка ввела фразу, использующую значимую словоформу из anchors_ru.yaml v2 (см.
+        check_no_anchor_lexicon_overlap за списком стоп-слов и точным алгоритмом
+        нормализации); сообщение об ошибке называет конкретную фразу и конкретный токен."""
+        violations = check_no_anchor_lexicon_overlap(self.raw_bank, DEFAULT_ANCHORS_PATH)
+        if violations:
+            detail = "\n".join(
+                f"  [{v.scale_id}][{v.level}][{v.style}] {v.text!r} -> {list(v.overlap_tokens)}"
+                for v in violations
+            )
+            self.fail(
+                f"{len(violations)} фраз(а) банка парафразов пересекается по значимой лексике "
+                f"с anchors_ru.yaml v2:\n{detail}"
+            )
 
 
 if __name__ == "__main__":
     # Различаем "CLI-диагностика" и "unittest": если переданы CLI-флаги диагностики
     # (--model/--prefix/--device/--anchors отличный от дефолта и т.п.) — работаем как CLI.
     # По умолчанию (без аргументов) — обычный unittest-прогон, как у всех test_*.py в проекте.
-    _cli_flags = {"--model", "--prefix", "--device", "--anchors", "--config", "--epsilon", "--pmf-temperature"}
+    _cli_flags = {
+        "--model", "--prefix", "--device", "--anchors", "--config", "--epsilon", "--pmf-temperature",
+        "--paraphrase-bank",
+    }
     if any(a in _cli_flags or a.startswith(tuple(f"{f}=" for f in _cli_flags)) for a in sys.argv[1:]):
         sys.exit(main())
     else:

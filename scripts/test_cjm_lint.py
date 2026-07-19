@@ -46,6 +46,16 @@ test_cjm_lint.py — юнит-тесты линтера честности (scri
       (`\\w*ированн\\w*`): такая эвристика ловила бы собственную терминологию
       проекта («смоделированн*», «сгенерированн*», «зафиксированн*» и т.п.) как
       «ИИ-изм» — см. test_curated_irovann_list_does_not_flag_project_own_terminology.
+
+Добавлено v1.4 (spec_synthetic-panel_v1.4.md §1.4; задание [B3]):
+    - TestRule4VisualNoticeabilityRedZone: расширение правила 4 — «полочная
+      заметность»/«заметность на полке», «привлечёт внимание на полке»,
+      «взгляд упадёт»/«куда упадёт взгляд» без тега источника. Как и
+      TestRule4CompetitiveRedZone — слово «гипотеза» НЕ освобождает от тега
+      (структурная красная зона), маскировка несъёмных блоков и атомарность
+      строк таблицы проверяются той же конструкцией фикстур; отдельный
+      контрольный позитивный тест на формулировку про считывание смыслов
+      (SKILL.md §6, 🟢-зона) — обязана проходить линтер начисто.
 """
 
 from __future__ import annotations
@@ -596,6 +606,280 @@ class TestRule4CompetitiveRedZone(unittest.TestCase):
         violations = cjm_lint.lint_text(text)
         rule4 = [v for v in violations if v.rule == 4]
         self.assertEqual(rule4, [], f"дисклеймер должен быть замаскирован, получено: {rule4}")
+
+
+# ----------------------------------------------------------------------------
+# Правило 4 (расширение v1.4, spec_synthetic-panel_v1.4.md §1.4): полочная
+# заметность / предсказание внимания — «полочная заметность»/«заметность на
+# полке», «привлечёт внимание на полке», «взгляд упадёт»/«куда упадёт взгляд»
+# без тега источника.
+# ----------------------------------------------------------------------------
+
+
+class TestRule4VisualNoticeabilityRedZone(unittest.TestCase):
+    def test_shelf_noticeability_stamp_without_tag_is_flagged(self):
+        text = "# Отчёт\n## Раздел 🟢\nЭтот вариант обеспечивает полочную заметность лучше конкурента.\n"
+        violations = cjm_lint.lint_text(text)
+        rule4 = [v for v in violations if v.rule == 4]
+        self.assertTrue(any("заметность на полке" in v.message for v in rule4), rule4)
+
+    def test_noticeable_on_shelf_reversed_order_is_flagged(self):
+        text = "# Отчёт\n## Раздел 🟢\nЖёлтая упаковка заметнее на полке, чем синяя.\n"
+        violations = cjm_lint.lint_text(text)
+        self.assertTrue(any(v.rule == 4 for v in violations))
+
+    def test_shelf_noticeability_with_source_tag_passes(self):
+        text = "# Отчёт\n## Раздел 🟢\nПо данным реального eye-tracking замера полочная заметность варианта A выше [BA].\n"
+        violations = cjm_lint.lint_text(text)
+        self.assertEqual([v for v in violations if v.rule == 4], [])
+
+    def test_shelf_noticeability_with_hypothesis_word_without_tag_is_still_flagged(self):
+        """Ключевая семантика: как и для конкурентной красной зоны (см.
+        TestRule4CompetitiveRedZone), слово «гипотеза» НЕ освобождает от тега
+        источника — полочная заметность структурно вне метода (см. докстринг
+        cjm_lint.py), пометка «гипотеза» эту структурную проблему не чинит."""
+        text = "# Отчёт\n## Раздел 🟡\nГипотеза: этот макет заметнее на полке, чем остальные.\n"
+        violations = cjm_lint.lint_text(text)
+        rule4 = [v for v in violations if v.rule == 4]
+        self.assertTrue(any("заметность на полке" in v.message for v in rule4), rule4)
+
+    def test_attracts_attention_on_shelf_without_tag_is_flagged(self):
+        text = "# Отчёт\n## Раздел 🟢\nТакой ключевой визуал точно привлечёт внимание на полке среди конкурентов.\n"
+        violations = cjm_lint.lint_text(text)
+        rule4 = [v for v in violations if v.rule == 4]
+        self.assertTrue(any("привлечёт внимание на полке" in v.message for v in rule4), rule4)
+
+    def test_attracts_attention_on_shelf_reversed_order_is_flagged(self):
+        text = "# Отчёт\n## Раздел 🟢\nНа полке в первую очередь привлекает внимание жёлтая крышка этого варианта.\n"
+        violations = cjm_lint.lint_text(text)
+        self.assertTrue(any(v.rule == 4 for v in violations))
+
+    def test_attracts_attention_without_shelf_context_is_not_flagged(self):
+        """«Привлечёт внимание» без темы полки — обычная 🟢-зона формулировка
+        про содержание сообщения, не про физическое расположение на полке
+        (см. докстринг cjm_lint.py, "Известное ограничение")."""
+        text = "# Отчёт\n## Раздел 🟢\nЭтот слоган точно привлечёт внимание аудитории к акции.\n"
+        violations = cjm_lint.lint_text(text)
+        self.assertEqual([v for v in violations if v.rule == 4], [])
+
+    def test_attracts_attention_on_shelf_with_source_tag_passes(self):
+        text = "# Отчёт\n## Раздел 🟢\nПо результатам реального attention-теста вариант привлекает внимание на полке [Mediascope].\n"
+        violations = cjm_lint.lint_text(text)
+        self.assertEqual([v for v in violations if v.rule == 4], [])
+
+    def test_gaze_will_land_phrase_is_flagged(self):
+        text = "# Отчёт\n## Раздел 🟢\nКуда упадёт взгляд покупателя — точно на этот вариант, а не на конкурента.\n"
+        violations = cjm_lint.lint_text(text)
+        rule4 = [v for v in violations if v.rule == 4]
+        self.assertTrue(any("взгляд упадёт" in v.message for v in rule4), rule4)
+
+    def test_gaze_will_land_reversed_order_is_flagged(self):
+        text = "# Отчёт\n## Раздел 🟢\nВзгляд сразу упадёт на этот дизайн среди остальных на полке.\n"
+        violations = cjm_lint.lint_text(text)
+        self.assertTrue(any(v.rule == 4 for v in violations))
+
+    def test_gaze_will_land_infinitive_form_is_flagged(self):
+        """Морфология: «упасть» (инфинитив, корень «пасть») наравне с «упадёт»
+        (корень «падать») — см. докстринг модуля за обоснованием чередования
+        согласной, которое здесь и проверяется."""
+        text = "# Отчёт\n## Раздел 🟡\nВажно, куда должен упасть взгляд покупателя в первую очередь.\n"
+        violations = cjm_lint.lint_text(text)
+        self.assertTrue(any(v.rule == 4 for v in violations))
+
+    def test_gaze_will_land_with_source_tag_passes(self):
+        text = "# Отчёт\n## Раздел 🟢\nПо данным реального eye-tracking замера взгляд чаще всего упадёт на вариант A [BA].\n"
+        violations = cjm_lint.lint_text(text)
+        self.assertEqual([v for v in violations if v.rule == 4], [])
+
+    def test_visual_noticeability_respects_table_row_atomicity(self):
+        """Регресс той же природы, что находка №1 review_v1.1.md (см.
+        TestRule4CompetitiveRedZone.test_competitive_red_zone_respects_table_row_atomicity)
+        — тег в одном ряду таблицы не должен «отмывать» непомеченный
+        стоп-паттерн в соседнем ряду."""
+        text = (
+            "# Отчёт\n## Раздел 🟢\n"
+            "| Вариант | Комментарий |\n"
+            "|---|---|\n"
+            "| A | заметность на полке подтверждена реальным замером [BA] |\n"
+            "| B | точно привлечёт внимание на полке без указания источника |\n"
+        )
+        violations = cjm_lint.lint_text(text)
+        rule4 = [v for v in violations if v.rule == 4]
+        self.assertEqual(len(rule4), 1, f"ожидалось 1 нарушение (ряд «B»), получено: {rule4}")
+        self.assertIn("B", rule4[0].excerpt)
+
+    def test_visual_noticeability_disclaimer_block_is_masked(self):
+        """Если формулировка отказа SKILL.md §6 (которая сама буквально
+        содержит «заметность … на полке», см. докстринг cjm_lint.py, "Известное
+        ограничение") когда-либо попадёт в references/disclaimers.md как
+        несъёмный блок — маскировка должна работать так же, как для
+        конкурентного дисклеймера (см.
+        test_competitive_disclaimer_block_is_masked_from_rule4 выше)."""
+        text = (
+            "# Отчёт\n## Раздел 🟢\nВсё в порядке здесь.\n\n"
+            "<!-- DISCLAIMER_BLOCK_START -->\n"
+            "## Границы этого отчёта\n\n"
+            "Полочная заметность и предсказание внимания этим отчётом не "
+            "оцениваются — это территория eye-tracking/attention-моделей, не "
+            "синтетической панели.\n"
+            "<!-- DISCLAIMER_BLOCK_END -->\n"
+        )
+        violations = cjm_lint.lint_text(text)
+        rule4 = [v for v in violations if v.rule == 4]
+        self.assertEqual(rule4, [], f"дисклеймер должен быть замаскирован, получено: {rule4}")
+
+    def test_clean_report_sample_about_meaning_comparison_passes(self):
+        """Контрольный позитивный тест: 🟢-зона формулировка про считывание
+        смыслов и сравнение вариантов (SKILL.md §6) обязана проходить линтер
+        начисто — ни один стоп-паттерн не должен сработать просто на словах
+        «внимание»/«заметный» вне контекста полки."""
+        text = (
+            "# Отчёт\n## Раздел 🟢\n"
+            "Вариант A яснее считывается как забота о натуральности состава, вариант B — "
+            "как более премиальный; персоны сегмента увереннее опознают продукт на варианте A.\n"
+        )
+        violations = cjm_lint.lint_text(text)
+        self.assertEqual([v for v in violations if v.rule == 4], [])
+
+
+# ----------------------------------------------------------------------------
+# v1.4 fix (docs/review_v1.4.md §2.2, [F1], находка №2, MAJOR): 9/9 естественных
+# перефразировок той же красно-зонной идеи проходили мимо старого узкого списка
+# из 3 буквальных формулировок. Все 9 — как тест-фикстуры (ДОЛЖНЫ ловиться),
+# плюс легитимные контрпримеры (НЕ должны ловиться) и один тест на «первым
+# увидят/заметят» (обобщение по заданию архитектора, не буквально из review).
+# ----------------------------------------------------------------------------
+
+
+class TestRule4VisualNoticeabilityBypassF1Fix(unittest.TestCase):
+    """9 перефразировок из docs/review_v1.4.md §2.2 (таблица "Перефразировка /
+    Почему проходит"), которые старый узкий список из 3 паттернов пропускал
+    незамеченными — теперь все 9 обязаны ловиться правилом 4."""
+
+    def test_bypass_1_noticeable_on_vitrina_instead_of_polka(self):
+        """review_v1.4.md §2.2, №1: «заметнее на витрине» — требовало корня
+        «полк*»/«полочн*», «витрина» как розничный синоним не ловился."""
+        text = "# Отчёт\n## Раздел 🟢\nЭтот вариант однозначно заметнее на витрине, чем остальные.\n"
+        violations = cjm_lint.lint_text(text)
+        self.assertTrue(any(v.rule == 4 for v in violations), "«заметнее на витрине» должно ловиться")
+
+    def test_bypass_2_noticeability_on_shelf_calque(self):
+        """review_v1.4.md §2.2, №2: «заметность на шелфе» (калька с англ. shelf) —
+        тот же корень «полк*»/«полочн*» отсутствует."""
+        text = "# Отчёт\n## Раздел 🟢\nЗаметность на шелфе у этого дизайна выше, если сравнивать оба варианта.\n"
+        violations = cjm_lint.lint_text(text)
+        self.assertTrue(any(v.rule == 4 for v in violations), "«заметность на шелфе» должно ловиться")
+
+    def test_bypass_3_shopper_attention_without_word_shelf(self):
+        """review_v1.4.md §2.2, №3: «точно привлечёт больше внимания покупателей»
+        (без слова «полка») — старый паттерн 2 требовал «полка» рядом с
+        «привлечёт внимание»; здесь розничный адресат («покупателей») сам по
+        себе достаточно однозначен."""
+        text = (
+            "# Отчёт\n## Раздел 🟢\n"
+            "Такая упаковка точно привлечёт больше внимания покупателей, чем остальные варианты.\n"
+        )
+        violations = cjm_lint.lint_text(text)
+        self.assertTrue(any(v.rule == 4 for v in violations), "«внимания покупателей» должно ловиться")
+
+    def test_bypass_4_attractive_adjective_without_word_attention(self):
+        """review_v1.4.md §2.2, №4: «однозначно более привлекателен на полке» —
+        старый паттерн 2 требовал буквально «внимани*» после «привлек-», а
+        прилагательное «привлекателен» вообще не несёт слова «внимание»."""
+        text = "# Отчёт\n## Раздел 🟢\nЭтот дизайн однозначно более привлекателен на полке среди похожих упаковок.\n"
+        violations = cjm_lint.lint_text(text)
+        self.assertTrue(any(v.rule == 4 for v in violations), "«привлекателен на полке» должно ловиться")
+
+    def test_bypass_5_catches_the_eye_on_shelf(self):
+        """review_v1.4.md §2.2, №5: «сильнее бросается в глаза на полке» — ни
+        одного из 3 старых корневых слов («полочн*»/«заметн*»/«упад*») в этой
+        формулировке нет."""
+        text = "# Отчёт\n## Раздел 🟢\nЖёлтая версия сильнее бросается в глаза на полке, чем синяя.\n"
+        violations = cjm_lint.lint_text(text)
+        self.assertTrue(any(v.rule == 4 for v in violations), "«бросается в глаза на полке» должно ловиться")
+
+    def test_bypass_6_stands_out_on_shelf(self):
+        """review_v1.4.md §2.2, №6: «на полке… выделяется заметно сильнее» —
+        «выделяется» не матчило корень «замет*»."""
+        text = "# Отчёт\n## Раздел 🟢\nНа полке этот макет выделяется заметно сильнее, чем остальные.\n"
+        violations = cjm_lint.lint_text(text)
+        self.assertTrue(any(v.rule == 4 for v in violations), "«на полке выделяется» должно ловиться")
+
+    def test_bypass_7_gaze_will_catch_on_instead_of_land(self):
+        """review_v1.4.md §2.2, №7: «взгляд… скорее зацепится за вариант Б» —
+        старый паттерн 3 требовал именно «упадёт»/«упасть»."""
+        text = "# Отчёт\n## Раздел 🟢\nВзгляд скорее зацепится за вариант Б, а не за вариант А.\n"
+        violations = cjm_lint.lint_text(text)
+        self.assertTrue(any(v.rule == 4 for v in violations), "«взгляд зацепится» должно ловиться")
+
+    def test_bypass_8_attention_prediction_literal_spec_phrase(self):
+        """review_v1.4.md §2.2, №8: «предсказание внимания распределится в
+        пользу…» — буквально формулировка красной зоны из spec §1.4/SKILL.md
+        §6 «Когда отказаться», для которой не было НИ ОДНОГО паттерна вообще."""
+        text = (
+            "# Отчёт\n## Раздел 🟢\n"
+            "Предсказание внимания здесь явно распределится в пользу более яркой упаковки.\n"
+        )
+        violations = cjm_lint.lint_text(text)
+        self.assertTrue(any(v.rule == 4 for v in violations), "«предсказание внимания» должно ловиться")
+
+    def test_bypass_9_homoglyph_latin_o_in_shelf_word(self):
+        """review_v1.4.md §2.2, №9 ("минорное наблюдение"): универсальная
+        слабость regex на смеси кириллицы/латиницы — «полке» с ЛАТИНСКОЙ «o»
+        вместо кириллической «о» (собрано явной конкатенацией строк ниже, чтобы
+        было однозначно видно, какой именно символ латинский)."""
+        homoglyph_polke = "п" + "o" + "лке"  # "o" здесь — ЛАТИНСКАЯ буква (U+006F), не кириллическая "о"
+        self.assertNotEqual(homoglyph_polke, "полке", "фикстура должна отличаться от чистой кириллицы")
+        text = f"# Отчёт\n## Раздел 🟢\nЭтот вариант явно заметнее на {homoglyph_polke}, чем остальные.\n"
+        violations = cjm_lint.lint_text(text)
+        self.assertTrue(any(v.rule == 4 for v in violations), "homoglyph-обход должен ловиться после нормализации")
+
+    def test_bonus_first_to_notice_on_shelf_is_flagged(self):
+        """Обобщение по заданию архитектора ("«первым увидят» и т.п."), не
+        буквально из review_v1.4.md — новый под-паттерн должен работать."""
+        text = "# Отчёт\n## Раздел 🟢\nИменно этот вариант первым увидят покупатели на полке магазина.\n"
+        violations = cjm_lint.lint_text(text)
+        self.assertTrue(any(v.rule == 4 for v in violations), "«первым увидят... на полке» должно ловиться")
+
+    # -- легитимные контрпримеры (НЕ должны ловиться) --------------------------
+
+    def test_legit_noticeably_improves_is_not_flagged(self):
+        """«заметно улучшает» — наречие степени без контекста места продажи,
+        не про полочную заметность вообще."""
+        text = (
+            "# Отчёт\n## Раздел 🟢\n"
+            "Новая формула заметно улучшает состояние волос уже через месяц использования.\n"
+        )
+        violations = cjm_lint.lint_text(text)
+        self.assertEqual([v for v in violations if v.rule == 4], [])
+
+    def test_legit_attention_to_ingredient_details_is_not_flagged(self):
+        """«внимание к деталям состава» — не глагол привлечения (привлек-/
+        привлеч-), не про полку/выкладку/витрину."""
+        text = (
+            "# Отчёт\n## Раздел 🟢\n"
+            "Персона обращает внимание на детали состава, указанные на обратной стороне упаковки.\n"
+        )
+        violations = cjm_lint.lint_text(text)
+        self.assertEqual([v for v in violations if v.rule == 4], [])
+
+    def test_legit_shelf_noticeability_with_survey_tag_is_not_flagged(self):
+        """Упоминание с тегом источника ([опрос]) — как и везде в правиле 4,
+        тег освобождает от нарушения целиком."""
+        text = "# Отчёт\n## Раздел 🟢\nЭтот вариант заметнее на полке, чем остальные [опрос].\n"
+        violations = cjm_lint.lint_text(text)
+        self.assertEqual([v for v in violations if v.rule == 4], [])
+
+    def test_legit_stands_out_without_shelf_context_is_not_flagged(self):
+        """«выделяется» вне контекста места продажи (акция/предложение, не
+        полка/витрина/выкладка) — обобщённый паттерн заметности гейтится
+        соседством с местом продажи, а не голым словом."""
+        text = (
+            "# Отчёт\n## Раздел 🟢\n"
+            "Внутренний посыл этого предложения выделяется на фоне остальных акций месяца.\n"
+        )
+        violations = cjm_lint.lint_text(text)
+        self.assertEqual([v for v in violations if v.rule == 4], [])
 
 
 # ----------------------------------------------------------------------------

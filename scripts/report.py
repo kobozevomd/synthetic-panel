@@ -44,6 +44,30 @@ pmf_by_sample.csv + manifest.json).
       режим-бейджа отчёта (v1.3 §1.5) и для render_client.py.
 
 Точка входа для run_study.py — render_report()/write_report().
+
+v1.4 (spec_synthetic-panel_v1.4.md §1.1-1.3, §2.2) добавляет:
+    - stimulus_display_text(stimulus) -> str: подпись стимула для таблиц — text,
+      иначе label (обязателен для image-only стимулов, см. run_study.py::
+      validate_and_resolve_stimuli), иначе id.
+    - render_report(..., vision_verdict=...)/render_appendix_table_section(...,
+      vision_verdict=...)/render_vision_check_detail(vision_verdict): построчная
+      детализация пробы зрения (§1.2) ПО СТИМУЛАМ в "## Приложение" — None для
+      текстовых study (report.md не меняется). Аггрегированный статус
+      пройдена/не пройдена — ОТДЕЛЬНЫЕ плейсхолдеры {{VISION_CHECK_SECTION}}/
+      {{VISION_CHECK_STATUS_LINE}}/{{VISION_CHECK_FAILED_BANNER}}/
+      {{STIMULUS_KIND_LINE}}/{{STIMULUS_KIND}} — эти пять report_template.md
+      ([B3]) заполняет ЦЕЛИКОМ run_study.py::run_report_stage через
+      header_mapping (тот же механизм, что уже несут MODE_BADGE/
+      CONTROLS_STATUS_LINE/CONTROLS_FAILED_BANNER — см. run_study.py, функции
+      compute_stimulus_kind_line/compute_vision_check_section/
+      compute_vision_check_status_line/compute_vision_check_failed_banner);
+      report.py сам их не вычисляет, только принимает vision_verdict для
+      построчной детализации выше. Схема vision_verdict — run_study.py::
+      compute_vision_verdicts.
+    - compute_controls_verdict(...)["placebo_kind"] / render_controls_verdict_detail:
+      kind выбранного плацебо этого прогона ("neutral"|"irrelevant"|
+      "empty_promise", references/placebo_bank_ru.yaml поле kind, [B2]) — в
+      детализации самоконтроля "## Приложение"; None для прогонов до v1.4.
 """
 
 from __future__ import annotations
@@ -244,6 +268,23 @@ def substitute_placeholders(text: str, mapping: dict[str, str]) -> str:
     for key, value in mapping.items():
         text = text.replace("{{" + key + "}}", str(value))
     return text
+
+
+def stimulus_display_text(stimulus: dict) -> str:
+    """
+    §1.1 v1.4 (report_template.md, п.14): подпись стимула для отчётных таблиц —
+    `text`, если непустой; иначе `label` (ОБЯЗАТЕЛЕН в study.yaml для image-only
+    стимулов, см. run_study.py::validate_and_resolve_stimuli — у image-only
+    стимула text-а может не быть вовсе); иначе id (защитный fallback на случай
+    невалидного study.yaml, не должен срабатывать после валидации run_study.py).
+    """
+    text = (stimulus.get("text") or "").strip()
+    if text:
+        return text
+    label = (stimulus.get("label") or "").strip()
+    if label:
+        return label
+    return stimulus.get("id", "")
 
 
 def separability_label(p_win: float) -> str:
@@ -677,6 +718,13 @@ def compute_controls_verdict(
         "controls_failed": controls_failed,
         "per_segment": per_segment_detail,
         "decoy_of": decoy_of,
+        # spec_synthetic-panel_v1.4.md §2.2 (находка №3 review_v1.3.md, контрастные
+        # плацебо): kind выбранного плацебо этого прогона ("neutral"|"irrelevant"|
+        # "empty_promise") — берётся из controls_manifest (run_study.py::
+        # build_controls_manifest), .get с фолбэком None для прогонов ДО v1.4 (их
+        # controls_manifest["placebo"] такого поля не несёт) - render_controls_verdict_detail
+        # ниже показывает строку про kind, только если она не None.
+        "placebo_kind": (controls_manifest.get("placebo") or {}).get("kind"),
     }
 
 
@@ -711,7 +759,7 @@ def render_ranking_section(
     study.yaml (без плацебо/ловушки — см. run_study.py::split_real_and_control_rows).
     """
     sibling_rankings_by_segment = sibling_rankings_by_segment or {}
-    stimulus_text_by_id = {s["id"]: s["text"] for s in study["stimuli"]}
+    stimulus_text_by_id = {s["id"]: stimulus_display_text(s) for s in study["stimuli"]}
     by_segment: dict[str, list[dict]] = {}
     for row in rows:
         by_segment.setdefault(row["segment"], []).append(row)
@@ -775,6 +823,43 @@ def render_ranking_section(
     return "\n\n---\n\n".join(blocks)
 
 
+def render_vision_check_detail(vision_verdict: dict) -> str:
+    """
+    §1.2 v1.4 — построчная детализация пробы зрения ПО СТИМУЛАМ (Definition of
+    Done v1.4, п.2: "вердикты по стимулам") для "## Приложение" — дополняет
+    аггрегированный {{VISION_CHECK_SECTION}} абзац "Паспорта методологии"
+    (тот несёт только общий статус пройдена/не пройдена, см. run_study.py::
+    compute_vision_check_section) построчной раскладкой по каждому изображению:
+    само описание (без роли персоны) + вердикт по каждому стимулу, который на
+    это изображение ссылается. `vision_verdict` — см. run_study.py::
+    compute_vision_verdicts (schema там же); вызывается ТОЛЬКО если
+    vision_verdict не None (study содержит хотя бы один визуальный стимул) —
+    для текстовых study эта функция не вызывается вовсе (см.
+    render_appendix_table_section), report.md текстовых study не меняется.
+    """
+    if vision_verdict.get("vision_failed"):
+        lines = ["**Проба зрения — детализация по стимулам (провалена, §1.2):**"]
+    else:
+        lines = ["**Проба зрения — детализация по стимулам (§1.2, пройдена):**"]
+    lines.append("")
+    lines.append("| Изображение | Стимулы | Описание (модель БЕЗ роли персоны) | Вердикт |")
+    lines.append("|---|---|---|---|")
+    for image in vision_verdict.get("per_image", []):
+        verdicts = image.get("per_stimulus_verdict") or {}
+        if verdicts:
+            verdict_txt = "; ".join(
+                f"{sid}: {'OK' if v == 'ok' else 'ПРОВАЛ'}" for sid, v in verdicts.items()
+            )
+        else:
+            verdict_txt = "н/д (key_element не задан ни у одного стимула)"
+        image_name = Path(str(image.get("image_path", ""))).name
+        lines.append(
+            f"| {image_name} | {', '.join(image.get('stimulus_ids', []))} | "
+            f"{truncate_label(image.get('description', ''), width=90)} | {verdict_txt} |"
+        )
+    return "\n".join(lines)
+
+
 def render_appendix_table_section(
     rows: list[dict],
     resp_rows: list[dict],
@@ -783,6 +868,7 @@ def render_appendix_table_section(
     bootstrap_iters: int,
     bootstrap_seed: int,
     controls_verdict: Optional[dict] = None,
+    vision_verdict: Optional[dict] = None,
 ) -> str:
     """
     "## Приложение" / APPENDIX_TABLE_START/END (report_template.md v1.3 §2.1 п.3/5):
@@ -791,9 +877,12 @@ def render_appendix_table_section(
     РАСКРЫВАЕТ секцию 1, не заменяет её). После таблиц — при наличии применимого
     controls_verdict (§1.4) — построчная детализация плацебо/ловушки по сегментам
     (ранг плацебо, ярлык ловушки), для аудита сверх однострочного
-    {{CONTROLS_STATUS_LINE}} из "Паспорт методологии".
+    {{CONTROLS_STATUS_LINE}} из "Паспорт методологии". vision_verdict (§1.2 v1.4,
+    None для текстовых study — см. render_vision_check_detail) — построчная
+    детализация пробы зрения ПО СТИМУЛАМ, сверх аггрегированного
+    {{VISION_CHECK_SECTION}} абзаца "Паспорта методологии".
     """
-    stimulus_text_by_id = {s["id"]: s["text"] for s in study["stimuli"]}
+    stimulus_text_by_id = {s["id"]: stimulus_display_text(s) for s in study["stimuli"]}
     by_segment: dict[str, list[dict]] = {}
     for row in rows:
         by_segment.setdefault(row["segment"], []).append(row)
@@ -831,6 +920,9 @@ def render_appendix_table_section(
             )
         blocks.append("\n".join(lines))
 
+    if vision_verdict:
+        blocks.append(render_vision_check_detail(vision_verdict))
+
     if controls_verdict and controls_verdict.get("applicable"):
         blocks.append(render_controls_verdict_detail(controls_verdict))
 
@@ -850,6 +942,14 @@ def render_controls_verdict_detail(controls_verdict: dict) -> str:
         lines = ["**Детализация самоконтроля (прогон не прошёл самоконтроль, §1.4):**"]
     else:
         lines = ["**Детализация самоконтроля (§1.4, пройден):**"]
+
+    # spec_synthetic-panel_v1.4.md §2.2: kind выбранного плацебо этого прогона —
+    # "neutral" (банк v1.3), "irrelevant"/"empty_promise" (контрастные, добавлены
+    # v1.4). Строка не пишется вовсе для прогонов ДО v1.4 (placebo_kind is None —
+    # controls_manifest тех прогонов не нёс поля kind).
+    placebo_kind = controls_verdict.get("placebo_kind")
+    if placebo_kind:
+        lines.append(f"Плацебо этого прогона — kind=«{placebo_kind}» (§2.2 v1.4, контрастные плацебо).")
 
     for detail in controls_verdict.get("per_segment", []):
         placebo_verdict = "OK" if detail["placebo_ok"] else "ПРОВАЛ"
@@ -903,6 +1003,7 @@ def render_report(
     bootstrap_seed: int = 42,
     controls_verdict: Optional[dict] = None,
     sibling_rankings_by_segment: Optional[dict[str, list[list[str]]]] = None,
+    vision_verdict: Optional[dict] = None,
 ) -> str:
     """
     Собирает финальный текст report.md из references/report_template.md (v1.3,
@@ -955,7 +1056,7 @@ def render_report(
     text = _splice_block(text, "<!-- RANKING_TABLE_START -->", "<!-- RANKING_TABLE_END -->", ranking_md)
 
     appendix_md = render_appendix_table_section(
-        rows, resp_rows, study, segments, bootstrap_iters, bootstrap_seed, controls_verdict
+        rows, resp_rows, study, segments, bootstrap_iters, bootstrap_seed, controls_verdict, vision_verdict
     )
     text = _splice_block(text, "<!-- APPENDIX_TABLE_START -->", "<!-- APPENDIX_TABLE_END -->", appendix_md)
 

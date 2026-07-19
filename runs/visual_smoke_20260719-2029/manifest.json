@@ -1,0 +1,217 @@
+{
+  "study_name": "visual_smoke",
+  "study_path": "studies/visual_smoke.yaml",
+  "study_type": "claims_ranking",
+  "question_scale": "purchase_intent",
+  "segments": [
+    "naturalniki_bez_khimii",
+    "razocharovannye_veterany"
+  ],
+  "stimuli": [
+    {
+      "id": "A",
+      "text": "",
+      "image": "/Users/romankobozev/Documents/Claude/Projects/Синтетические ИИ-панели/synthetic-panel/studies/assets/visual_smoke/demo_a_minimalist_sulfate_free.png",
+      "label": "Минималистичный светлый — «Без сульфатов»",
+      "key_element": "БЕЗ СУЛЬФАТОВ"
+    },
+    {
+      "id": "B",
+      "text": "",
+      "image": "/Users/romankobozev/Documents/Claude/Projects/Синтетические ИИ-панели/synthetic-panel/studies/assets/visual_smoke/demo_b_bright_double_volume.png",
+      "label": "Яркий насыщенный — «Двойной объём»",
+      "key_element": "ДВОЙНОЙ ОБЪЁМ"
+    },
+    {
+      "id": "C",
+      "text": "",
+      "image": "/Users/romankobozev/Documents/Claude/Projects/Синтетические ИИ-панели/synthetic-panel/studies/assets/visual_smoke/demo_c_clinical_tested.png",
+      "label": "Аптечный строгий — «Клинически протестировано»",
+      "key_element": "КЛИНИЧЕСКИ ПРОТЕСТИРОВАНО"
+    }
+  ],
+  "stimulus_kind": "image",
+  "image_parallelism_warning": null,
+  "respondents_per_segment": 4,
+  "samples_per_respondent": 2,
+  "config_snapshot": {
+    "llm": {
+      "provider": "agent",
+      "model": "claude-sonnet-5",
+      "temperature": 0.85,
+      "samples_per_respondent": 2
+    },
+    "embedding": {
+      "model": "ai-forever/ru-en-RoSBERTa",
+      "prefix": "classification: ",
+      "device": "cpu",
+      "validated_stack": true,
+      "validated_at": "2026-07-18",
+      "validated_by": "scripts/test_anchors.py + scripts/embedder_ab.py (spec_synthetic-panel_v1.3.md §1.2 п.2-3)",
+      "anchors_version": 2
+    },
+    "ssr": {
+      "epsilon": 0.001,
+      "pmf_temperature": 1.0,
+      "min_anchor_sets": 4
+    },
+    "report": {
+      "bootstrap_iters": 1000,
+      "seed": 42,
+      "ci": 0.95
+    }
+  },
+  "controls": {
+    "enabled": true,
+    "placebo": {
+      "real_id": "__placebo__",
+      "bank_id": "placebo_irrelevant_3",
+      "text": "В сутках двадцать четыре часа, как и везде.",
+      "blind_id": "BL4",
+      "kind": "irrelevant"
+    },
+    "decoy": {
+      "real_id": "__decoy__",
+      "decoy_of": "B",
+      "text": "Яркий насыщенный — «Двойной объём».",
+      "blind_id": "BL5"
+    },
+    "blind_to_real": {
+      "BL1": "A",
+      "BL2": "C",
+      "BL3": "B",
+      "BL4": "__placebo__",
+      "BL5": "__decoy__"
+    },
+    "real_to_blind": {
+      "A": "BL1",
+      "C": "BL2",
+      "B": "BL3",
+      "__placebo__": "BL4",
+      "__decoy__": "BL5"
+    }
+  },
+  "created_at": "2026-07-19T17:32:23.649524+00:00",
+  "stages": {
+    "generate": {
+      "provider": "agent",
+      "status": "todo",
+      "n_tasks": 80,
+      "temperature_control": false,
+      "model": null,
+      "temperature": null,
+      "completed_at": "2026-07-19T17:32:23.652167+00:00"
+    },
+    "score": {
+      "embedding_model": "ai-forever/ru-en-RoSBERTa",
+      "embedding_device": "cpu",
+      "embedding_prefix": "classification: ",
+      "embedding_validated_stack": true,
+      "epsilon": 0.001,
+      "pmf_temperature": 1.0,
+      "min_anchor_sets": 4,
+      "n_responses_scored": 80,
+      "bootstrap_iters": 1000,
+      "bootstrap_seed": 42,
+      "ci": 0.95,
+      "completed_at": "2026-07-19T17:42:14.536931+00:00"
+    },
+    "report": {
+      "report_path": "/Users/romankobozev/Documents/Claude/Projects/Синтетические ИИ-панели/synthetic-panel/runs/visual_smoke_20260719-2029/report.md",
+      "mode": "exploratory",
+      "completed_at": "2026-07-19T17:42:15.078984+00:00"
+    }
+  },
+  "anchors_version": 2,
+  "agent_self_report": {
+    "model": "claude-sonnet-5",
+    "self_reported": true,
+    "recorded_at": "2026-07-19T17:32:23.649649+00:00"
+  },
+  "vision_check": {
+    "per_image": [
+      {
+        "image_path": "/Users/romankobozev/Documents/Claude/Projects/Синтетические ИИ-панели/synthetic-panel/studies/assets/visual_smoke/demo_a_minimalist_sulfate_free.png",
+        "stimulus_ids": [
+          "A"
+        ],
+        "description": "Флакон шампуня на светлом кремовом/бежевом фоне, минималистичный дизайн. Матовый флакон бежево-белого цвета с крышкой из матового светлого материала (оттенок светлого дерева/бежевого пластика). Над названием бренда — тонкий контурный значок в виде листа, нарисованный одной зелёной линией (символ натуральности). Название бренда «ДемоБренд» набрано разреженным тонким шрифтом с засечками (антиква), тёмно-зелёным цветом; под ним — тонкая горизонтальная линия-разделитель. Ниже курсивом мелким шрифтом — слово «шампунь». В центре флакона — крупная жирная надпись в две строки тёмно-зелёным, почти чёрным цветом: «БЕЗ СУЛЬФАТОВ» — самый заметный текстовый элемент всего макета по размеру шрифта. Сразу под ней курсивом мельче: «мягкая формула для чувствительной кожи головы». В нижней части флакона — мелкая подпись «растительные экстракты · без силиконов». Общая палитра — кремовый/бежевый/тёмно-зелёный, много пустого пространства, никаких ярких цветов, градиентов или графических украшений кроме тонкого контурного листа. Никаких фотографий людей или продукта в действии.",
+        "key_element_by_stimulus": {
+          "A": "БЕЗ СУЛЬФАТОВ"
+        },
+        "per_stimulus_verdict": {
+          "A": "ok"
+        }
+      },
+      {
+        "image_path": "/Users/romankobozev/Documents/Claude/Projects/Синтетические ИИ-панели/synthetic-panel/studies/assets/visual_smoke/demo_b_bright_double_volume.png",
+        "stimulus_ids": [
+          "B"
+        ],
+        "description": "Флакон на ярком фоне с диагональным градиентом от малиново-розового (вверху) к оранжевому (внизу); позади флакона — расходящиеся из одной точки светлые тонкие лучи, эффект «вспышки/всплеска». Флакон белый, глянцевый, с жёлтой крышкой и жёлтой контурной окантовкой корпуса. На самом флаконе — крупная прямоугольная этикетка насыщенного малиново-пурпурного цвета с жёлтой рамкой. На этикетке белым жирным шрифтом название бренда «ДемоБренд»; ниже — очень крупная надпись жёлтыми заглавными буквами в две строки «ДВОЙНОЙ ОБЪЁМ» — самый крупный и визуально доминирующий текст на макете; под ней белым текстом помельче «волосам каждый день!». Справа, частично перекрывая край этикетки и белый корпус флакона, — круглый жёлтый бейдж-стикер с тёмно-красной надписью «×2» и словом «ОБЪЁМ» под ней. В нижней части макета, уже на оранжевом фоне под флаконом, — белая надпись «формула с коллагеном для мгновенного объёма». Общее впечатление — яркое, динамичное, контрастные насыщенные цвета (малиновый/оранжевый/жёлтый/белый), никакой сдержанности в композиции, много визуальной энергии (лучи, крупные буквы, круглый бейдж).",
+        "key_element_by_stimulus": {
+          "B": "ДВОЙНОЙ ОБЪЁМ"
+        },
+        "per_stimulus_verdict": {
+          "B": "ok"
+        }
+      },
+      {
+        "image_path": "/Users/romankobozev/Documents/Claude/Projects/Синтетические ИИ-панели/synthetic-panel/studies/assets/visual_smoke/demo_c_clinical_tested.png",
+        "stimulus_ids": [
+          "C"
+        ],
+        "description": "Флакон на чисто белом фоне, строгий, «аптечный»/клинический стиль. Сверху и снизу всего изображения — сплошные тёмно-синие горизонтальные полосы. Флакон белый с прямоугольной тёмно-синей крышкой и тонким тёмно-синим контуром корпуса. Название бренда «DEMOBRAND» дано латиницей, заглавными буквами с разрядкой между буквами, тёмно-синего цвета; под ним — тонкая синяя разделительная линия и серая подпись «дерматологическая линия». Ниже, по центру — круглая эмблема-печать: двойной тонкий синий контур (кольцо в кольце), внутри — крупная синяя галочка (чек-марк), похоже на сертификационный знак/знак одобрения. Под печатью — крупная жирная надпись синим заглавными буквами в две строки: «КЛИНИЧЕСКИ ПРОТЕСТИРОВАНО» — самый крупный текст на макете. Под ней серым текстом мельче: «под контролем врачей-дерматологов, независимая лаборатория». Ниже расположена прямоугольная таблица-плашка с тонкими горизонтальными разделителями и тремя строками мелкого текста: «переносимость кожей головы — исследование, n=104», «гипоаллергенность подтверждена», «без отдушек-раздражителей». В самом низу флакона — мелкая подпись «состав опубликован · номер серии на упаковке». Цветовая палитра ограничена белым, тёмно-синим (навy) и серым — никаких тёплых или ярких цветов; много прямых линий, рамок и таблично организованного текста, общее ощущение — медицинская/лабораторная упаковка, а не косметическая.",
+        "key_element_by_stimulus": {
+          "C": "КЛИНИЧЕСКИ ПРОТЕСТИРОВАНО"
+        },
+        "per_stimulus_verdict": {
+          "C": "ok"
+        }
+      }
+    ],
+    "vision_failed": false,
+    "failed_stimulus_ids": [],
+    "n_stimuli_with_image": 3,
+    "confirmed_despite_failures": false
+  },
+  "embedding_model": "ai-forever/ru-en-RoSBERTa",
+  "mode": "exploratory",
+  "model": "claude-sonnet-5 (самодекларация модели-агента, self_reported=true)",
+  "controls_verdict": {
+    "applicable": true,
+    "placebo_passed": true,
+    "decoy_passed": true,
+    "controls_failed": false,
+    "per_segment": [
+      {
+        "segment": "naturalniki_bez_khimii",
+        "placebo_rank": 5,
+        "placebo_n_total": 5,
+        "placebo_bottom_third_size": 2,
+        "placebo_rank_rule_applied": false,
+        "placebo_beats": [],
+        "placebo_gray": [],
+        "placebo_ok": true,
+        "decoy_label": "в пределах шума",
+        "decoy_ok": true,
+        "p_decoy_gt_original": 0.651
+      },
+      {
+        "segment": "razocharovannye_veterany",
+        "placebo_rank": 5,
+        "placebo_n_total": 5,
+        "placebo_bottom_third_size": 2,
+        "placebo_rank_rule_applied": false,
+        "placebo_beats": [],
+        "placebo_gray": [],
+        "placebo_ok": true,
+        "decoy_label": "в пределах шума",
+        "decoy_ok": true,
+        "p_decoy_gt_original": 0.359
+      }
+    ],
+    "decoy_of": "B",
+    "placebo_kind": "irrelevant"
+  }
+}

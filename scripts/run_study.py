@@ -50,6 +50,41 @@ panel/segments/<category_slug>/<id>.yaml (см. scripts/segments_export.py).
 Негативные контроли (§1.4, фикс Д5) — см. докстринг раздела "Негативные контроли"
 ниже для полного контракта (плацебо/пара-ловушка/слепые id, схема manifest.json:
 controls, обратная совместимость study.yaml: controls: off).
+
+ВИЗУАЛЬНЫЕ СТИМУЛЫ И ПРОБА ЗРЕНИЯ (spec_synthetic-panel_v1.4.md §1.1-1.3, Модуль 1)
+— полный контракт в докстрингах соответствующих разделов ниже; сводка для B3/F1:
+    - study.yaml: stimuli[].image (путь PNG/JPG/JPEG, опционально) + stimuli[].label
+      (короткая подпись — ОБЯЗАТЕЛЬНА для image-only, т.е. без непустого text) +
+      stimuli[].key_element (опционально — ключевой различающий элемент варианта
+      для пробы зрения). См. validate_and_resolve_stimuli (валидация + резолв пути
+      в абсолютный, мутация IN PLACE) и check_image_parallelism (предупреждение,
+      не блок).
+    - manifest.json: НОВЫЕ верхнеуровневые поля `stimulus_kind` ("text"|"image"|
+      "mixed", вычисляется ОДИН раз при первой инициализации run_dir — см.
+      load_or_init_manifest) и `image_parallelism_warning` (str|null); `vision_check`
+      (см. compute_vision_verdicts) — появляется только для визуальных study,
+      ОБНОВЛЯЕТСЯ на каждой стадии generate/score/report (В ОТЛИЧИЕ от `controls`,
+      не "замораживается" — вердикт пробы зрения не завязан на seed/случайность,
+      пересчёт из 00_vision_check.yaml безопасен, см. resolve_vision_verdict).
+    - Новый артефакт run_dir/00_vision_check.yaml (+ human-readable 00_vision_check.md)
+      — стадия ПЕРЕД генерацией персональных ответов (см. докстринг раздела "Проба
+      зрения" ниже за полной схемой/механикой стоп-условий).
+    - report_template.md ([B3], v1.4) — 5 новых плейсхолдеров (STIMULUS_KIND_LINE/
+      STIMULUS_KIND/VISION_CHECK_SECTION/VISION_CHECK_STATUS_LINE/
+      VISION_CHECK_FAILED_BANNER), заполняются ЦЕЛИКОМ этим модулем через
+      header_mapping в run_report_stage (см. compute_stimulus_kind_line/
+      compute_vision_check_section/compute_vision_check_status_line/
+      compute_vision_check_failed_banner) — report.py сам их не вычисляет.
+    - §2.2 (находка №3 review_v1.3.md, контрастные плацебо): pick_placebo/
+      build_controls_manifest — kind выбранного плацебо ("neutral"|"irrelevant"|
+      "empty_promise", references/placebo_bank_ru.yaml, [B2]) фиксируется в
+      manifest.json: controls.placebo.kind и виден в детализации самоконтроля
+      report.md (report.py::render_controls_verdict_detail).
+    - ВАЖНО (найдено сквозным смоук-тестом визуального пилота этой итерации, не
+      юнит-тестами): build_effective_study ОБЯЗАН переносить image/label/
+      key_element РЕАЛЬНЫХ стимулов через блиндинг (§1.4) — иначе визуальная
+      генерация молча превращается в текстовую на ЛЮБОМ study.yaml, т.к. controls
+      включены по умолчанию для всех study.
 """
 
 from __future__ import annotations
@@ -58,6 +93,7 @@ import argparse
 import csv
 import json
 import logging
+import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -73,6 +109,13 @@ if str(_SCRIPTS_DIR) not in sys.path:
 import generate  # noqa: E402
 import report  # noqa: E402
 import ssr_core  # noqa: E402
+
+try:  # pillow — опционально: нужен только для проверки непараллельности (§1.1 v1.4)
+    from PIL import Image  # noqa: E402
+    _PIL_AVAILABLE = True
+except ImportError:  # pragma: no cover - venv без pillow (setup.sh ставит его)
+    Image = None  # type: ignore[assignment]
+    _PIL_AVAILABLE = False
 
 logger = logging.getLogger("run_study")
 
@@ -223,8 +266,9 @@ def controls_requested(study: dict) -> bool:
 
 
 def load_placebo_bank(skill_root: Path) -> list[dict]:
-    """references/placebo_bank_ru.yaml — банк из 3-5 заведомо пустых/слабых
-    "клеймов" (см. сам файл за полным контрактом требований к каждому плацебо)."""
+    """references/placebo_bank_ru.yaml — банк заведомо пустых/слабых "клеймов",
+    минимум 3 (верхний предел сняли в v1.4 §2.2 — банк расширен контрастными
+    kind, см. сам файл за полным контрактом требований к каждому плацебо)."""
     path = skill_root / "references" / "placebo_bank_ru.yaml"
     data = load_yaml(path)
     placebos = data.get("placebos") or []
@@ -233,11 +277,29 @@ def load_placebo_bank(skill_root: Path) -> list[dict]:
     return placebos
 
 
+# spec_synthetic-panel_v1.4.md §2.2 (находка №3 review_v1.3.md): контрастные
+# kind плацебо — references/placebo_bank_ru.yaml, поле `kind` на элемент.
+CONTRASTIVE_PLACEBO_KINDS = {"irrelevant", "empty_promise"}
+
+
 def pick_placebo(bank: list[dict], seed: int, study_name: str) -> dict:
-    """Ротация плацебо по seed — см. generate.make_rng (тот же детерминированный
-    механизм, что и джиттер персон, просто с другим "namespace" в частях seed)."""
+    """
+    Ротация плацебо по seed — см. generate.make_rng (тот же детерминированный
+    механизм, что и джиттер персон, просто с другим "namespace" в частях seed).
+
+    §2.2 v1.4: по умолчанию ротация отдаёт предпочтение КОНТРАСТНЫМ kind
+    (irrelevant/empty_promise, references/placebo_bank_ru.yaml) — если банк
+    содержит хотя бы один такой элемент, rng.choice выбирает ТОЛЬКО среди них
+    (старые "neutral" элементы не участвуют). Обратная совместимость: банк БЕЗ
+    поля `kind` вовсе (прогон на bank v1.3, до этой правки) или без контрастных
+    элементов — pool совпадает со всем bank, поведение и выбор ПОБИТОВО такие
+    же, как до v1.4 (тот же rng.choice(bank) с тем же seed/study_name даёт тот
+    же индекс — важно для воспроизводимости уже сделанных прогонов).
+    """
     rng = generate.make_rng(seed, study_name, "controls_placebo")
-    return rng.choice(bank)
+    contrastive = [p for p in bank if p.get("kind") in CONTRASTIVE_PLACEBO_KINDS]
+    pool = contrastive if contrastive else bank
+    return rng.choice(pool)
 
 
 def make_decoy_text(original_text: str, rng) -> str:
@@ -277,6 +339,32 @@ def pick_decoy_source(stimuli: list[dict], seed: int, study_name: str) -> dict:
     return rng.choice(stimuli)
 
 
+def decoy_source_text(stimulus: dict) -> str:
+    """
+    §1.4/§1.1 v1.4: текст-основа для косметической правки пары-ловушки
+    (make_decoy_text). Пара-ловушка ВСЕГДА чисто текстовая (см. build_effective_study
+    докстринг) — даже когда реальный стимул, выбранный pick_decoy_source, image-only
+    (нет непустого `text`, как у стимулов "image+label" визуальных исследований,
+    spec_synthetic-panel_v1.4.md §1.1). В этом случае используем `label` (короткая
+    подпись, ОБЯЗАТЕЛЬНАЯ для image-only стимулов, см. validate_and_resolve_stimuli)
+    как ближайший текстовый эквивалент — гарантированно непустой, т.к. схема уже
+    провалидирована к моменту вызова (image-only без label не проходит валидацию).
+    До v1.4 у ЛЮБОГО стимула был непустой `text` — тогда это просто возвращает его,
+    ПОБИТОВО то же поведение, что и раньше (обратная совместимость).
+    """
+    text = (stimulus.get("text") or "").strip()
+    if text:
+        return text
+    label = (stimulus.get("label") or "").strip()
+    if label:
+        return label
+    raise ValueError(
+        f"study.yaml: стимул {stimulus.get('id', '?')!r} выбран источником пары-ловушки "
+        "(controls, §1.4), но не несёт ни 'text', ни 'label' — не из чего строить "
+        "текстовую пару-ловушку (validate_and_resolve_stimuli должен был это отловить раньше)."
+    )
+
+
 def build_controls_manifest(study: dict, skill_root: Path, seed: int) -> dict:
     """
     Вызывается РОВНО ОДИН РАЗ, при первой инициализации manifest.json прогона (см.
@@ -291,7 +379,7 @@ def build_controls_manifest(study: dict, skill_root: Path, seed: int) -> dict:
     placebo_entry = pick_placebo(bank, seed, study["name"])
     decoy_source = pick_decoy_source(study["stimuli"], seed, study["name"])
     decoy_rng = generate.make_rng(seed, study["name"], "controls_decoy_text")
-    decoy_text = make_decoy_text(decoy_source["text"], decoy_rng)
+    decoy_text = make_decoy_text(decoy_source_text(decoy_source), decoy_rng)
 
     real_ids = [s["id"] for s in study["stimuli"]]
     clash = {rid for rid in real_ids if rid in (PLACEBO_REAL_ID, DECOY_REAL_ID)}
@@ -318,6 +406,10 @@ def build_controls_manifest(study: dict, skill_root: Path, seed: int) -> dict:
             "bank_id": placebo_entry["id"],
             "text": placebo_entry["text"],
             "blind_id": real_to_blind[PLACEBO_REAL_ID],
+            # §2.2 v1.4: kind контрастного плацебо ("neutral"|"irrelevant"|
+            # "empty_promise") — фолбэк "neutral" для банков без поля kind
+            # (обратная совместимость с bank v1.3).
+            "kind": placebo_entry.get("kind", "neutral"),
         },
         "decoy": {
             "real_id": DECOY_REAL_ID,
@@ -338,6 +430,14 @@ def build_effective_study(study: dict, controls_manifest: dict) -> dict:
     Оригинальный `study` (с реальными id) продолжает использоваться для
     отчёта/шапки — см. run_report_stage. Если контроли отключены — возвращает
     study БЕЗ изменений (тот же объект, стимулы не трогаются вовсе).
+
+    ВАЖНО (spec_synthetic-panel_v1.4.md §1.1/1.3): `image`/`label`/`key_element`
+    РЕАЛЬНЫХ стимулов обязаны пережить блиндинг — иначе (находка смоук-теста
+    визуального пилота v1.4) build_tasks/write_agent_mode получают слепой
+    стимул БЕЗ image/label, и вся визуальная генерация молча превращается в
+    текстовую, притом что controls включены ПО УМОЛЧАНИЮ для любого study.yaml.
+    Плацебо/ловушка — ВСЕГДА чисто текстовые (references/placebo_bank_ru.yaml,
+    make_decoy_text) и image/label не несут вовсе.
     """
     if not controls_manifest.get("enabled"):
         return study
@@ -350,7 +450,17 @@ def build_effective_study(study: dict, controls_manifest: dict) -> dict:
         {"id": placebo["real_id"], "text": placebo["text"]},
         {"id": decoy["real_id"], "text": decoy["text"]},
     ]
-    blinded_stimuli = [{"id": real_to_blind[s["id"]], "text": s["text"]} for s in all_real_stimuli]
+    blinded_stimuli = []
+    for s in all_real_stimuli:
+        # .get(...) а не s["text"]: image-only реальные стимулы (§1.1 v1.4, image+label
+        # БЕЗ text вовсе, не просто с пустым text="") не несут ключа "text" в study.yaml —
+        # прямая индексация здесь падала KeyError на первом же image-only study
+        # (integration-баг, найден на реальном end-to-end прогоне visual_smoke, [F2] v1.4).
+        blinded = {"id": real_to_blind[s["id"]], "text": s.get("text") or ""}
+        for optional_field in ("image", "label", "key_element"):
+            if s.get(optional_field):
+                blinded[optional_field] = s[optional_field]
+        blinded_stimuli.append(blinded)
 
     effective = dict(study)
     effective["stimuli"] = blinded_stimuli
@@ -452,6 +562,173 @@ def validate_study_schema(study: dict, study_path: Path) -> None:
         sys.exit(1)
 
 
+# ============================================================================
+# Визуальные стимулы — схема/валидация (spec_synthetic-panel_v1.4.md §1.1)
+# ============================================================================
+#
+# study.yaml: элементы `stimuli` получают опциональное поле `image` (путь к файлу
+# PNG/JPG/JPEG) и опциональные `label` (короткая подпись — ОБЯЗАТЕЛЬНА, если у
+# стимула нет непустого `text`, т.к. иначе нечем подписать таблицу отчёта) и
+# `key_element` (текст ключевого различающего элемента варианта — опционален,
+# используется ТОЛЬКО пробой зрения §1.2, см. ниже). Допустимы: text-only (как
+# раньше, до v1.4), image-only (text отсутствует/пуст, label обязателен),
+# смешанные (и text, и image). validate_and_resolve_stimuli ниже — единственное
+# место, которое проверяет и РАЗРЕШАЕТ (см. resolve_image_path) поле `image` —
+# после этой функции `stimulus["image"]` (если было задано) ВСЕГДА абсолютный,
+# существующий, провалидированного формата путь; остальной код (generate.py,
+# report.py, vision-check ниже) читает `stimulus["image"]` уже как готовый к
+# использованию путь, не занимаясь резолвом заново.
+
+IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg"}
+
+# Эвристические пороги "непараллельности" (§1.1: "предупреждение, не блок") —
+# грубая практическая проверка, не научная величина. Соотношение сторон > 20%
+# ИЛИ площадь в пикселях > 60% разницы между самым узким/широким или
+# самым маленьким/большим изображением стимулов этого study — предупреждение.
+IMAGE_ASPECT_RATIO_WARN_FACTOR = 1.2
+IMAGE_AREA_WARN_FACTOR = 1.6
+
+
+def resolve_image_path(image_field: str, study_path: Path, skill_root: Path) -> Path:
+    """
+    §1.1: разрешает путь к файлу изображения стимула. Порядок попыток: абсолютный
+    путь как есть; иначе относительно папки study.yaml; иначе относительно корня
+    скилла. Первый СУЩЕСТВУЮЩИЙ вариант побеждает. ValueError (не sys.exit —
+    вызывающий код решает, как реагировать) со списком всех опробованных путей,
+    если файла нет НИ ПО ОДНОМУ из них, или если найденный файл не PNG/JPG/JPEG.
+    """
+    raw = Path(image_field)
+    candidates = [raw] if raw.is_absolute() else [study_path.parent / raw, skill_root / raw]
+    for candidate in candidates:
+        if candidate.exists():
+            if candidate.suffix.lower() not in IMAGE_EXTENSIONS:
+                raise ValueError(
+                    f"стимул: изображение {image_field!r} -> {candidate} имеет неподдерживаемый "
+                    f"формат {candidate.suffix!r} (разрешены: {sorted(IMAGE_EXTENSIONS)})."
+                )
+            # .absolute() (НЕ .resolve()): docstring этой функции и
+            # validate_and_resolve_stimuli обещают ВСЕГДА абсолютный путь — но при
+            # относительном --study (обычный стиль вызова CLI, см. README/SKILL.md
+            # примеры) study_path.parent тоже относителен, и candidate оставался
+            # относительным (integration-баг, найден на реальном end-to-end прогоне
+            # visual_smoke, [F2] v1.4 — юнит-тесты его не ловили, т.к. фикстуры
+            # всегда строят абсолютный study_path). .absolute() лишь анчорит путь к
+            # cwd процесса (идентична для уже-абсолютных путей — не меняет
+            # поведение существующих тестов), НЕ трогает симлинки/".."
+            # (в отличие от .resolve(), который на macOS мог бы неожиданно
+            # переписать /var/folders-пути тестовых tempdir).
+            return candidate.absolute()
+    tried = "\n".join(f"  {c}" for c in candidates)
+    raise ValueError(f"стимул: файл изображения не найден: {image_field!r}. Проверены пути:\n{tried}")
+
+
+def check_image_parallelism(dims: list[tuple[str, int, int]]) -> Optional[str]:
+    """
+    §1.1 "предупреждение о непараллельности": существенно разные размеры/пропорции
+    изображений между вариантами стимулов — предупреждение (манифест + отчёт), НЕ
+    блокировка прогона (незначительные технические различия не всегда портят
+    сравнение смыслов, но крупные — сигнал, что варианты подготовлены
+    непоследовательно: разный кроп, разное разрешение экспорта и т.п.).
+
+    dims — [(stimulus_id, width, height), ...] ТОЛЬКО стимулов с image; вызывающий
+    код (validate_and_resolve_stimuli) уже отфильтровал < 2 записей (не с чем
+    сравнивать — вернуть нечего предупреждать). Чистая функция без файлового
+    ввода-вывода — тестируется на голых кортежах, без реальных изображений.
+    """
+    if len(dims) < 2:
+        return None
+    by_id = {sid: (w, h) for sid, w, h in dims}
+    ratios = {sid: w / h for sid, (w, h) in by_id.items()}
+    areas = {sid: w * h for sid, (w, h) in by_id.items()}
+
+    issues: list[str] = []
+    r_lo_id, r_lo = min(ratios.items(), key=lambda kv: kv[1])
+    r_hi_id, r_hi = max(ratios.items(), key=lambda kv: kv[1])
+    if r_lo > 0 and r_hi / r_lo > IMAGE_ASPECT_RATIO_WARN_FACTOR:
+        issues.append(
+            f"соотношение сторон различается заметно ({r_lo_id!r}: {r_lo:.2f}, {r_hi_id!r}: {r_hi:.2f})"
+        )
+    a_lo_id, a_lo = min(areas.items(), key=lambda kv: kv[1])
+    a_hi_id, a_hi = max(areas.items(), key=lambda kv: kv[1])
+    if a_lo > 0 and a_hi / a_lo > IMAGE_AREA_WARN_FACTOR:
+        w_lo, h_lo = by_id[a_lo_id]
+        w_hi, h_hi = by_id[a_hi_id]
+        issues.append(f"разрешение различается заметно ({a_lo_id!r}: {w_lo}x{h_lo}, {a_hi_id!r}: {w_hi}x{h_hi})")
+    if not issues:
+        return None
+    return (
+        "изображения стимулов подготовлены непараллельно: " + "; ".join(issues) + " — сравнение "
+        "вариантов может быть смещено техническими различиями макетов, а не их содержанием "
+        "(предупреждение, не блокировка прогона)."
+    )
+
+
+def compute_stimulus_kind(any_image: bool, all_image: bool) -> str:
+    """§1.1: вычисляемое поле stimulus_kind study-уровня для manifest.json —
+    "text" (ни один стимул не несёт image), "image" (ВСЕ стимулы несут image),
+    "mixed" (часть стимулов с image, часть без)."""
+    if not any_image:
+        return "text"
+    return "image" if all_image else "mixed"
+
+
+def validate_and_resolve_stimuli(study: dict, study_path: Path, skill_root: Path) -> dict:
+    """
+    §1.1: валидирует и РАЗРЕШАЕТ (мутирует IN PLACE — заменяет заданный в
+    study.yaml путь на абсолютный, см. resolve_image_path) поле `image` каждого
+    элемента study['stimuli']. Правила:
+      - стимул обязан иметь непустой `text` И/ИЛИ `image` (иначе ValueError);
+      - image-only (нет непустого text) обязан иметь непустой `label`;
+      - `image`, если задан, обязан существовать и быть PNG/JPG/JPEG
+        (resolve_image_path) — ValueError со списком проверенных путей иначе.
+    Возвращает {"stimulus_kind": "text"|"image"|"mixed",
+    "image_parallelism_warning": Optional[str]} — оба вычисляются ОДИН раз для
+    ВСЕГО study и идут в manifest.json (см. load_or_init_manifest) и в
+    report_template.md {{STIMULUS_KIND}}/{{STIMULUS_KIND_LINE}} (report.py,
+    header_mapping — см. run_report_stage). Raises ValueError на первой
+    найденной ошибке схемы (вызывающий код — main() — конвертирует в
+    ОШИБКА:.../sys.exit(1), тот же стиль, что и validate_study_schema выше).
+    """
+    any_image = False
+    all_image = True
+    dims: list[tuple[str, int, int]] = []
+
+    for s in study["stimuli"]:
+        text = (s.get("text") or "").strip()
+        image_field = s.get("image")
+        has_text = bool(text)
+        has_image = bool(image_field)
+
+        if not has_text and not has_image:
+            raise ValueError(f"study.yaml: стимул {s.get('id', '?')!r} — нужен непустой 'text' и/или 'image'.")
+
+        if has_image:
+            any_image = True
+            resolved = resolve_image_path(str(image_field), study_path, skill_root)
+            s["image"] = str(resolved)
+            if not has_text and not (s.get("label") or "").strip():
+                raise ValueError(
+                    f"study.yaml: стимул {s['id']!r} — image-only (нет текста), но не задан "
+                    "обязательный 'label' (короткая подпись для отчёта, spec_synthetic-panel_v1.4.md §1.1)."
+                )
+            if _PIL_AVAILABLE:
+                try:
+                    with Image.open(resolved) as im:
+                        dims.append((s["id"], im.width, im.height))
+                except Exception as exc:  # файл повреждён/нечитаем — не блокируем прогон целиком
+                    logger.warning(
+                        "run_study.py: не удалось прочитать размеры изображения %s (%s) — проверка "
+                        "непараллельности (§1.1) для этого стимула пропущена.", resolved, exc,
+                    )
+        else:
+            all_image = False
+
+    return {
+        "stimulus_kind": compute_stimulus_kind(any_image, all_image),
+        "image_parallelism_warning": check_image_parallelism(dims),
+    }
+
+
 def resolve_run_dir(run_dir_arg: Optional[str], skill_root: Path, study_name: str, stage: str) -> Path:
     runs_root = skill_root / "runs"
     if run_dir_arg:
@@ -482,13 +759,40 @@ def resolve_run_dir(run_dir_arg: Optional[str], skill_root: Path, study_name: st
     sys.exit(1)
 
 
-def load_or_init_manifest(run_dir: Path, study: dict, config: dict, study_path: Path, skill_root: Path) -> dict:
+def _stimulus_manifest_entry(s: dict) -> dict:
+    """§1.1 v1.4: запись стимула в manifest.json['stimuli'] — id/text как раньше,
+    плюс image (уже разрешённый абсолютный путь)/label/key_element ТОЛЬКО если
+    реально заданы (не засорять manifest пустыми полями у текстовых study)."""
+    entry = {"id": s["id"], "text": s.get("text", "")}
+    for optional_field in ("image", "label", "key_element"):
+        if s.get(optional_field):
+            entry[optional_field] = s[optional_field]
+    return entry
+
+
+def load_or_init_manifest(
+    run_dir: Path,
+    study: dict,
+    config: dict,
+    study_path: Path,
+    skill_root: Path,
+    stimuli_info: Optional[dict] = None,
+) -> dict:
     """
     Читает manifest.json существующего прогона КАК ЕСТЬ (без пересчёта — критично
     для controls: слепые метки/плацебо/ловушка фиксируются ОДИН раз здесь, при
     первой инициализации, см. build_controls_manifest, и НЕ должны пересчитываться
     при повторных --stage score/report, иначе разойдутся с уже сгенерированным
     responses.jsonl).
+
+    stimuli_info — НОВОЕ v1.4 (spec_synthetic-panel_v1.4.md §1.1): результат
+    validate_and_resolve_stimuli(study, ...), т.е. {"stimulus_kind", "image_
+    parallelism_warning"} — фиксируется в manifest ОДИН раз при первой
+    инициализации (тем же приёмом, что и controls выше); None (дефолт) для
+    вызовов, где стимулы заведомо текстовые (например, тесты этого модуля,
+    писавшиеся до v1.4) — тогда manifest["stimulus_kind"] будет "text" через
+    тот же фолбэк, что report.py/report_template.md уже используют для
+    прогонов ДО v1.4 (см. compute_stimulus_kind_line ниже).
     """
     manifest_path = run_dir / "manifest.json"
     if manifest_path.exists():
@@ -502,7 +806,8 @@ def load_or_init_manifest(run_dir: Path, study: dict, config: dict, study_path: 
     if controls_manifest.get("enabled"):
         print(
             "-- Негативные контроли включены (§1.4 spec_synthetic-panel_v1.3.md): "
-            f"плацебо [{controls_manifest['placebo']['bank_id']}] + пара-ловушка "
+            f"плацебо [{controls_manifest['placebo']['bank_id']}] "
+            f"(kind={controls_manifest['placebo'].get('kind', 'neutral')!r}) + пара-ловушка "
             f"(косметическая копия стимула {controls_manifest['decoy']['decoy_of']!r}), "
             "слепые id для генерации (соответствие — manifest.json: controls.blind_to_real)."
         )
@@ -512,13 +817,16 @@ def load_or_init_manifest(run_dir: Path, study: dict, config: dict, study_path: 
             f"({controls_manifest.get('reason', 'controls: off')}). Выводы этого прогона "
             "не проходят самопроверку §1.4 — используйте с осторожностью."
         )
+    stimuli_info = stimuli_info or {"stimulus_kind": "text", "image_parallelism_warning": None}
     return {
         "study_name": study["name"],
         "study_path": str(study_path),
         "study_type": study["type"],
         "question_scale": study["question_scale"],
         "segments": list(study["segments"]),
-        "stimuli": [{"id": s["id"], "text": s["text"]} for s in study["stimuli"]],
+        "stimuli": [_stimulus_manifest_entry(s) for s in study["stimuli"]],
+        "stimulus_kind": stimuli_info["stimulus_kind"],
+        "image_parallelism_warning": stimuli_info.get("image_parallelism_warning"),
         "respondents_per_segment": int(study["respondents_per_segment"]),
         "samples_per_respondent": samples_per_respondent,
         "config_snapshot": config,
@@ -533,6 +841,287 @@ def save_manifest(run_dir: Path, manifest: dict) -> None:
     with manifest_path.open("w", encoding="utf-8") as f:
         json.dump(manifest, f, ensure_ascii=False, indent=2)
         f.write("\n")
+
+
+# ============================================================================
+# Проба зрения (spec_synthetic-panel_v1.4.md §1.2)
+# ============================================================================
+#
+# Обязательная стадия ПЕРЕД генерацией ответов персон, ЕСЛИ у study есть хотя бы
+# один стимул с `image` (см. build_vision_check_targets — [] для чисто текстовых
+# study, вся остальная машинерия ниже становится no-op). Модель БЕЗ роли персоны
+# описывает КАЖДОЕ изображение (что видит: продукт, текст на макете, ключевые
+# элементы) → артефакт run_dir/00_vision_check.yaml (+md, человекочитаемый
+# двойник). Правило вердикта: если `key_element` стимула (study.yaml, опционален)
+# не распознан в описании — стимул помечается `vision_failed`; прогон
+# продолжается ТОЛЬКО по явному подтверждению (`confirmed_despite_failures: true`
+# в 00_vision_check.yaml) — иначе останавливается (exit 2), аналог controls_failed
+# по духу (манифест + красная плашка в отчёте), но, В ОТЛИЧИЕ от него, это
+# ПРЕДВАРИТЕЛЬНЫЙ гейт ДО генерации, а не пост-хок вердикт — страховка "тестировали
+# галлюцинацию, а не дизайн", а не просто пометка задним числом.
+#
+# Agent-режим: описание пишет ведущая модель САМА — читает файл (Read) по
+# `image_path` и заполняет пустые `description`/`key_element_recognized` в
+# 00_vision_check.yaml вручную (см. VISION_CHECK_STOP_PENDING — инструкция).
+# API-режим (anthropic/openai): вызывается generate.describe_image_via_provider
+# (отдельный, нейтральный system prompt — НЕ build_system_prompt персоны) — см.
+# run_generate_stage. gigachat: отказ ДО попытки — честная ошибка о неподдержке
+# (см. run_generate_stage, до вызова любого провайдера).
+
+VISION_CHECK_YAML_NAME = "00_vision_check.yaml"
+VISION_CHECK_MD_NAME = "00_vision_check.md"
+
+# Короткий стоп-список — только чтобы не засчитывать служебные слова "значимыми"
+# при эвристике keyword_recognized ниже; НЕ лингвистический разбор, самая частая
+# мелкая закрытая группа союзов/предлогов русского языка.
+_RU_STOPWORDS_SHORT = {
+    "или", "как", "что", "это", "его", "она", "они", "тут", "там", "для", "при",
+}
+
+
+def build_vision_check_targets(study: dict) -> list[dict]:
+    """
+    §1.2: группирует стимулы study['stimuli'] с непустым `image` по РАЗРЕШЁННОМУ
+    пути файла (validate_and_resolve_stimuli уже сделал image абсолютным путём к
+    этому моменту, см. main()) — несколько стимулов, ссылающихся на ОДИН и тот же
+    файл, описываются/оцениваются ОДИН раз. [] для чисто текстовых study (нет ни
+    одного stimulus['image']) — все функции ниже, вызываемые ПОСЛЕ этой, для
+    пустого списка целей являются no-op (см. run_generate_stage).
+    """
+    by_path: dict[str, dict] = {}
+    for s in study["stimuli"]:
+        image = s.get("image")
+        if not image:
+            continue
+        target = by_path.setdefault(image, {"image_path": image, "stimulus_ids": [], "key_elements": {}})
+        target["stimulus_ids"].append(s["id"])
+        if s.get("key_element"):
+            target["key_elements"][s["id"]] = s["key_element"]
+    return [by_path[k] for k in sorted(by_path)]
+
+
+def _vision_check_stub(targets: list[dict]) -> dict:
+    """Начальное (todo) состояние 00_vision_check.yaml — пустые description, для
+    заполнения агентом (agent-режим) или generate.fill_vision_check_descriptions
+    (API-режим, см. run_generate_stage).
+
+    `vision_check_source` (v1.4 fix, докстринг модуля, "Известное ограничение
+    agent-режима пробы зрения" ниже) — None до заполнения; agent-режим обязан
+    явно проставить "agent_self_reported" (см. VISION_CHECK_STOP_PENDING),
+    API-режим проставляется автоматически ("api_vision", см.
+    generate.fill_vision_check_descriptions) — честная запись о том, ЧЕМ именно
+    подтверждён просмотр изображения, а не фактическое тому доказательство (см.
+    references/methodology.md §6.3, оговорка про agent-режим)."""
+    return {
+        "meta": {"stage": "vision_check", "n_images": len(targets)},
+        "confirmed_despite_failures": False,
+        "images": [
+            {
+                "image_path": t["image_path"],
+                "stimulus_ids": list(t["stimulus_ids"]),
+                "key_element_by_stimulus": dict(t["key_elements"]),
+                "description": "",
+                "key_element_recognized": None,
+                "vision_check_source": None,
+            }
+            for t in targets
+        ],
+    }
+
+
+def write_vision_check_yaml(data: dict, run_dir: Path) -> Path:
+    path = run_dir / VISION_CHECK_YAML_NAME
+    with path.open("w", encoding="utf-8") as f:
+        yaml.safe_dump(data, f, allow_unicode=True, sort_keys=False)
+    return path
+
+
+def load_vision_check(run_dir: Path) -> Optional[dict]:
+    path = run_dir / VISION_CHECK_YAML_NAME
+    if not path.exists():
+        return None
+    return load_yaml(path)
+
+
+def vision_check_is_pending(vc: dict) -> bool:
+    """True, если хотя бы одно изображение ещё без описания (заполнение агентом/
+    API-вызовом ещё не произошло) — run_generate_stage останавливает прогон, пока
+    это True (см. VISION_CHECK_STOP_PENDING)."""
+    return any(not (img.get("description") or "").strip() for img in vc.get("images", []))
+
+
+def _significant_words(text: str) -> list[str]:
+    words = re.findall(r"[a-zа-яё0-9]+", text.lower())
+    return [w for w in words if len(w) >= 3 and w not in _RU_STOPWORDS_SHORT]
+
+
+def keyword_recognized(description: str, key_element: str) -> bool:
+    """
+    §1.2: эвристика "распознан ли key_element в свободном описании изображения" —
+    ВСЕ значимые слова (>=3 символов, за вычетом короткого стоп-списка)
+    key_element обязаны встретиться подстрокой в description (регистронезависимо).
+    Простая, прозрачная, ДЕТЕРМИНИРОВАННАЯ проверка — не семантическое сравнение
+    (не гоняем embedding-модель ради короткой фразы на этой стадии). ИЗВЕСТНОЕ
+    ограничение (не скрыто): описание-синоним без общих слов даст ложный
+    "vision_failed" — см. compute_vision_verdicts ниже, где явный
+    key_element_recognized (agent сам видел изображение и может судить надёжнее
+    строкового совпадения по СОБСТВЕННОМУ описанию) приоритетнее этой эвристики.
+    Пустой/вырожденный key_element (после фильтрации не осталось значимых слов)
+    -> True (нечего проверять, не считаем провалом).
+    """
+    words = _significant_words(key_element)
+    if not words:
+        return True
+    desc_lower = description.lower()
+    return all(w in desc_lower for w in words)
+
+
+def compute_vision_verdicts(vc: dict) -> dict:
+    """
+    §1.2: вердикт по каждому изображению + агрегат по прогону. Для каждого
+    stimulus_id, ссылающегося на изображение и задавшего непустой key_element:
+    `key_element_recognized`, если явно True/False (не None) в 00_vision_check.yaml
+    — приоритетнее эвристики (агент, реально видевший изображение, надёжнее
+    строкового совпадения по собственному описанию); иначе — keyword_recognized
+    на description. Стимулы без key_element — всегда "ok" (нечего проверять).
+    Возвращает {"per_image": [...], "vision_failed": bool, "failed_stimulus_ids":
+    [...], "n_stimuli_with_image": int, "confirmed_despite_failures": bool}.
+    Каждый элемент `per_image` несёт `vision_check_source` (v1.4 fix — см.
+    "Известное ограничение agent-режима пробы зрения" в докстринге модуля):
+    "agent_self_reported" | "api_vision" | None (не заполнено/старый прогон
+    до этой правки) — пропускается ЧЕРЕЗ агрегат без изменений, само по себе
+    НЕ влияет ни на один вердикт (не код-уровня проверка, честная запись
+    источника, не доказательство).
+    """
+    per_image = []
+    failed_stimulus_ids: list[str] = []
+    n_stimuli_with_image = 0
+    for img in vc.get("images", []):
+        description = img.get("description") or ""
+        key_elements = img.get("key_element_by_stimulus") or {}
+        explicit = img.get("key_element_recognized")
+        per_stimulus_verdict: dict[str, str] = {}
+        for sid in img.get("stimulus_ids", []):
+            n_stimuli_with_image += 1
+            key_element = key_elements.get(sid)
+            if not key_element:
+                per_stimulus_verdict[sid] = "ok"
+                continue
+            recognized = bool(explicit) if explicit is not None else keyword_recognized(description, key_element)
+            if recognized:
+                per_stimulus_verdict[sid] = "ok"
+            else:
+                per_stimulus_verdict[sid] = "vision_failed"
+                failed_stimulus_ids.append(sid)
+        per_image.append(
+            {
+                "image_path": img.get("image_path"),
+                "stimulus_ids": list(img.get("stimulus_ids", [])),
+                "description": description,
+                "key_element_by_stimulus": key_elements,
+                "per_stimulus_verdict": per_stimulus_verdict,
+                "vision_check_source": img.get("vision_check_source"),
+            }
+        )
+    return {
+        "per_image": per_image,
+        "vision_failed": bool(failed_stimulus_ids),
+        "failed_stimulus_ids": failed_stimulus_ids,
+        "n_stimuli_with_image": n_stimuli_with_image,
+        "confirmed_despite_failures": bool(vc.get("confirmed_despite_failures", False)),
+    }
+
+
+# v1.4 fix: человекочитаемая расшифровка vision_check_source (см. докстринг
+# _vision_check_stub/compute_vision_verdicts и "Известное ограничение agent-
+# режима пробы зрения" в модульном докстринге) — используется ТОЛЬКО в
+# render_vision_check_markdown, самих вердиктов не меняет.
+_VISION_CHECK_SOURCE_RU = {
+    "agent_self_reported": (
+        "агент (самоотчёт агент-режима — без кодовой проверки, что описание "
+        "реально основано на просмотре файла, см. references/methodology.md §6.3)"
+    ),
+    "api_vision": "отдельный API vision-вызов (provider реально получил пиксели изображения)",
+    None: "не указан (старый прогон до v1.4 fix либо источник не заполнен)",
+}
+
+
+def render_vision_check_markdown(verdicts: dict) -> str:
+    """Человекочитаемый двойник 00_vision_check.yaml (см. модульный докстринг,
+    прецедент — runs/*/00_filter.md рядом с 00_filter.yaml в этом же проекте)."""
+    lines = ["# Проба зрения (spec_synthetic-panel_v1.4.md §1.2)", ""]
+    if not verdicts["failed_stimulus_ids"]:
+        lines.append(
+            "Вердикт: ключевые элементы распознаны везде, где заданы (или key_element "
+            "не задавался ни для одного стимула)."
+        )
+    else:
+        lines.append(
+            f"Вердикт: **vision_failed** для стимулов "
+            f"{', '.join(verdicts['failed_stimulus_ids'])} — ключевой элемент не распознан в описании."
+        )
+        lines.append(
+            "Подтверждено продолжение вопреки провалу (confirmed_despite_failures): "
+            + ("да" if verdicts["confirmed_despite_failures"] else "НЕТ")
+        )
+    lines.append("")
+    for img in verdicts["per_image"]:
+        lines.append(f"## {img['image_path']}")
+        lines.append(f"Стимулы: {', '.join(img['stimulus_ids'])}")
+        lines.append("")
+        lines.append(f"Описание (без роли персоны): {img['description'] or '_(не заполнено)_'}")
+        source = img.get("vision_check_source")
+        lines.append(f"Источник описания: {_VISION_CHECK_SOURCE_RU.get(source, source)}")
+        for sid, key_element in (img["key_element_by_stimulus"] or {}).items():
+            mark = "OK" if img["per_stimulus_verdict"].get(sid) == "ok" else "ПРОВАЛ"
+            lines.append(f"- key_element {sid}: «{key_element}» -> {mark}")
+        lines.append("")
+    return "\n".join(lines)
+
+
+def write_vision_check_markdown(verdicts: dict, run_dir: Path) -> Path:
+    path = run_dir / VISION_CHECK_MD_NAME
+    path.write_text(render_vision_check_markdown(verdicts), encoding="utf-8")
+    return path
+
+
+VISION_CHECK_STOP_PENDING = """\
+== Проба зрения (§1.2): нужно описать изображения ПЕРЕД генерацией ответов персон ==
+Study содержит визуальные стимулы. Файл {vc_path} создан с пустыми описаниями.
+
+Что сделать:
+1. Для КАЖДОГО элемента `images` в {vc_name} прочитайте файл по пути `image_path`
+   (инструмент чтения файла) и впишите в поле `description` объективное описание
+   БЕЗ роли персоны: что на изображении — продукт, текст на макете, ключевые
+   визуальные элементы, композиция, цвета. Не оценивайте, не изображайте персону.
+2. Если для стимула задан `key_element_by_stimulus` — явно впишите
+   `key_element_recognized: true`/`false` (распознан ли этот элемент на
+   изображении, по вашему суждению — надёжнее, чем автоматическое сравнение слов).
+3. Впишите `vision_check_source: agent_self_reported` для КАЖДОГО элемента
+   `images` — честная запись, что описание заполнено вами (agent-режим), а не
+   отдельным API vision-вызовом. ВАЖНО (известное ограничение метода, см.
+   references/methodology.md §6.3): это самоотчёт — код НЕ проверяет, что
+   description реально основано на просмотре файла, а не сочинено правдоподобно
+   без Read-вызова. Действительно прочитайте файл, прежде чем писать описание.
+4. Сохраните файл и повторите:
+   python scripts/run_study.py --study {study_path} --stage generate --run-dir {run_dir}
+"""
+
+VISION_CHECK_STOP_FAILED = """\
+== Проба зрения (§1.2) провалена ==
+Ключевой элемент не распознан для стимулов: {failed}.
+Это может означать, что макет нечитаем/не соответствует описанию, а не что
+персона реагирует на реальный дизайн — продолжать без явного подтверждения
+рискованно ("тестировали галлюцинацию, а не дизайн").
+
+Чтобы продолжить всё равно (например, если после ручной проверки описание
+корректно, просто key_element сформулирован строже эвристики) — откройте
+{vc_path} и установите:
+    confirmed_despite_failures: true
+Затем повторите ту же команду --stage generate.
+
+Файл с деталями: {vc_md_path}
+"""
 
 
 # ============================================================================
@@ -551,6 +1140,71 @@ def run_generate_stage(
 ) -> generate.GenerateOutcome:
     provider_name = config.get("llm", {}).get("provider", "agent")
     responses_path = run_dir / "responses.jsonl"
+
+    # §1.2 v1.4: проба зрения — гейт ПЕРЕД любой генерацией ответов персон, ЕСЛИ
+    # study содержит визуальные стимулы (build_vision_check_targets возвращает []
+    # для чисто текстовых study — блок ниже целиком no-op в этом случае, ничего
+    # не меняется для v1.3-стиля прогонов).
+    vision_targets = build_vision_check_targets(study)
+    if vision_targets:
+        if provider_name == "gigachat":
+            print(
+                "ОШИБКА: study.yaml содержит визуальные стимулы (image), а provider=gigachat "
+                "визуальные стимулы пока не поддерживает (см. generate.GigaChatProvider, "
+                "spec_synthetic-panel_v1.4.md §1.3). Используйте provider: agent/anthropic/openai.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+        vc_path = run_dir / VISION_CHECK_YAML_NAME
+        if not vc_path.exists():
+            write_vision_check_yaml(_vision_check_stub(vision_targets), run_dir)
+
+        vc = load_vision_check(run_dir)
+
+        # API-режим может заполнить описания сам (нейтральный vision-вызов,
+        # см. generate.describe_image_via_provider) — agent-режим оставляет это
+        # ведущей модели (см. VISION_CHECK_STOP_PENDING ниже).
+        if provider_name in ("anthropic", "openai") and vc is not None and vision_check_is_pending(vc):
+            vision_provider = generate.get_provider(provider_name, config)
+            generate.fill_vision_check_descriptions(vc, vision_provider)
+            write_vision_check_yaml(vc, run_dir)
+            vc = load_vision_check(run_dir)
+
+        if vc is None or vision_check_is_pending(vc):
+            verdicts_stub = compute_vision_verdicts(vc or _vision_check_stub(vision_targets))
+            write_vision_check_markdown(verdicts_stub, run_dir)
+            print(
+                VISION_CHECK_STOP_PENDING.format(
+                    vc_path=vc_path, vc_name=VISION_CHECK_YAML_NAME, study_path=study_path, run_dir=run_dir,
+                ),
+                file=sys.stderr,
+            )
+            sys.exit(2)
+
+        vision_verdict = compute_vision_verdicts(vc)
+        write_vision_check_markdown(vision_verdict, run_dir)
+        manifest["vision_check"] = vision_verdict
+
+        if vision_verdict["vision_failed"] and not vision_verdict["confirmed_despite_failures"]:
+            print(
+                VISION_CHECK_STOP_FAILED.format(
+                    failed=", ".join(vision_verdict["failed_stimulus_ids"]),
+                    vc_path=vc_path,
+                    vc_md_path=run_dir / VISION_CHECK_MD_NAME,
+                ),
+                file=sys.stderr,
+            )
+            sys.exit(2)
+
+        if vision_verdict["vision_failed"]:
+            print(
+                "== ВНИМАНИЕ: проба зрения провалена для "
+                f"{', '.join(vision_verdict['failed_stimulus_ids'])}, но подтверждено продолжение "
+                "(confirmed_despite_failures: true) — ответы персон по этим стимулам ненадёжны, "
+                "отчёт пометит это красной плашкой.",
+                file=sys.stderr,
+            )
 
     # §1.4: стадия generate работает на "эффективном" study — с добавленными
     # плацебо/ловушкой и переведённым на слепые id (см. build_effective_study).
@@ -602,6 +1256,33 @@ def run_score_stage(run_dir: Path, config: dict, anchor_sets: list[dict[int, str
             file=sys.stderr,
         )
         sys.exit(1)
+
+    # §1.2 v1.4: защита в глубину — если по какой-то причине (например, ручной
+    # обход стадии generate) 00_vision_check.yaml существует, но не завершён/не
+    # подтверждён после провала, --stage score отказывает, а не молча считает по
+    # ненадёжным ответам. Штатный путь (через --stage generate) уже остановил бы
+    # прогон раньше — см. run_generate_stage; это ТОЛЬКО страховка, не дублирующий
+    # основной путь для study без изображений (vc is None -> no-op).
+    vc_path = run_dir / VISION_CHECK_YAML_NAME
+    if vc_path.exists():
+        vc = load_vision_check(run_dir)
+        if vc is not None and vision_check_is_pending(vc):
+            print(
+                f"ОШИБКА: {vc_path} ещё не заполнен (проба зрения §1.2) — сначала завершите её "
+                "(см. --stage generate).",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        if vc is not None:
+            vision_verdict = compute_vision_verdicts(vc)
+            if vision_verdict["vision_failed"] and not vision_verdict["confirmed_despite_failures"]:
+                print(
+                    f"ОШИБКА: проба зрения провалена и не подтверждена (confirmed_despite_failures) "
+                    f"— см. {vc_path}.",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+            manifest["vision_check"] = vision_verdict
 
     rows: list[dict] = []
     with responses_path.open("r", encoding="utf-8") as f:
@@ -875,6 +1556,124 @@ def compute_controls_failed_banner(controls_verdict: dict) -> str:
     )
 
 
+# ============================================================================
+# Проба зрения — плейсхолдеры report_template.md v1.4 (§1.1/1.2, [B3] — форма
+# шаблона; вычисления и manifest-поля — [B1], см. докстринг вверху файла
+# "ЧТО МЕНЯЕТСЯ ДЛЯ REPORT.PY (v1.4...)" в самом report_template.md за полным
+# контрактом п.10-14). Тот же приём, что и MODE_BADGE/CONTROLS_STATUS_LINE/
+# CONTROLS_FAILED_BANNER выше — report.py сам их НЕ вычисляет, получает готовыми
+# строками через header_mapping (см. run_report_stage).
+# ============================================================================
+
+
+def compute_stimulus_kind_line(stimulus_kind: str, vision_verdict: Optional[dict]) -> str:
+    """
+    {{STIMULUS_KIND_LINE}} (report_template.md, п.10) — пометка визуального
+    прогона сразу под «Режим прогона». Пустая строка для stimulus_kind == "text"
+    (подавляющее большинство прогонов, включая ВСЕ прогоны до v1.4 — фолбэк
+    "text" при отсутствии поля в manifest, см. run_report_stage) — НИКАК не
+    меняет report.md для текстовых study. 🖼️/📝, НЕ 🟢/🔴 — те зарезервированы
+    cjm_lint.py::looks_like_trust_map_report (см. комментарий шаблона, п.10) —
+    иначе обычный report.md ложно стал бы "trust-map-документом" для линтера.
+    """
+    if stimulus_kind not in ("image", "mixed"):
+        return ""
+    kind_label = "🖼️ ВИЗУАЛЬНЫЕ" if stimulus_kind == "image" else "📝🖼️ СМЕШАННЫЕ"
+    passed = bool(vision_verdict) and not vision_verdict.get("vision_failed")
+    status = "проба зрения: пройдена" if passed else "проба зрения: НЕ пройдена — см. паспорт методологии"
+    return f"**Стимулы:** {kind_label} ({status})"
+
+
+def compute_vision_check_status_line(vision_verdict: Optional[dict]) -> str:
+    """
+    {{VISION_CHECK_STATUS_LINE}} (report_template.md, "Технический паспорт
+    прогона" + переиспользуется внутри compute_vision_check_section ниже) —
+    пустая строка, если прогон не визуальный (vision_verdict is None, т.е.
+    stimulus_kind == "text" — см. комментарий шаблона у самого плейсхолдера).
+    Два канонических текста, по аналогии с compute_controls_status_line.
+    """
+    if not vision_verdict:
+        return ""
+    if vision_verdict.get("vision_failed"):
+        n_failed = len(vision_verdict.get("failed_stimulus_ids", []))
+        n_with_image = vision_verdict.get("n_stimuli_with_image", n_failed)
+        return (
+            f"НЕ пройдена для {n_failed} из {n_with_image} вариантов с изображением "
+            "(см. 00_vision_check.md) — прогон продолжен только по явному подтверждению "
+            "либо соответствующий стимул помечен непригодным; выводы по затронутым "
+            "вариантам использовать с осторожностью, не как готовый результат"
+        )
+    return "пройдена — ключевые элементы всех вариантов распознаны"
+
+
+def compute_vision_check_section(vision_verdict: Optional[dict]) -> str:
+    """
+    {{VISION_CHECK_SECTION}} (report_template.md, п.11) — абзац «Паспорта
+    методологии» сразу после «Самоконтроль прогона: ...». Пустая строка целиком
+    при stimulus_kind == "text" (vision_verdict is None) — весь абзац исчезает,
+    report.md текстовых study не меняется. Формулировка — прямая калька примера
+    из комментария шаблона (не перефразировать — согласовано с [B3]).
+    """
+    if not vision_verdict:
+        return ""
+    status_line = compute_vision_check_status_line(vision_verdict)
+    return (
+        f"**Проба зрения:** {status_line} — до того как персоны начали реагировать, "
+        "модель без роли персоны описала каждое изображение (что видит: продукт, "
+        "текст на макете, ключевые элементы) и сверила описание с ключевым "
+        "различающим элементом варианта (`key_element`, study.yaml), если он был "
+        "задан; полный разбор по каждому варианту — [00_vision_check.md](00_vision_check.md). "
+        "Это проверка «панель тестировала макет, а не собственную галлюцинацию о нём», "
+        "не оценка дизайна."
+    )
+
+
+def compute_vision_check_failed_banner(vision_verdict: Optional[dict]) -> str:
+    """
+    {{VISION_CHECK_FAILED_BANNER}} (report_template.md, п.12) — СРАЗУ под
+    {{CONTROLS_FAILED_BANNER}} (тот же контракт-приём: пустая строка при
+    отсутствии провала пробы зрения; короткий абзац-предупреждение при
+    vision_failed=true). Контракт-маркер для будущего линтера: точная фраза
+    "проба зрения не пройдена" ОБЯЗАНА присутствовать при срабатывании — не
+    сокращать/переформулировать (аналог "прогон не прошёл самоконтроль" выше).
+    """
+    if not vision_verdict or not vision_verdict.get("vision_failed"):
+        return ""
+    failed = ", ".join(vision_verdict.get("failed_stimulus_ids", []))
+    confirmed_note = (
+        "продолжено по явному подтверждению (confirmed_despite_failures)"
+        if vision_verdict.get("confirmed_despite_failures")
+        else "ВНИМАНИЕ: подтверждения продолжения не было"
+    )
+    return (
+        f"> **проба зрения не пройдена для стимулов: {failed}.** Ключевой различающий "
+        "элемент не распознан в объективном описании изображения — есть риск, что "
+        f"персона реагировала на непрочитанный/нечитаемый макет ({confirmed_note}). "
+        "Выводы по ЭТИМ стимулам использовать с осторожностью — см. «Приложение»/"
+        "00_vision_check.md."
+    )
+
+
+def resolve_vision_verdict(run_dir: Path, manifest: dict) -> Optional[dict]:
+    """
+    §1.2 v1.4 — читает АКТУАЛЬНЫЙ вердикт пробы зрения для --stage report:
+    пересчитывает свежий вердикт прямо из 00_vision_check.yaml, если файл
+    существует и уже полностью заполнен (самолечение на случай правки файла
+    МЕЖДУ стадиями — например, confirmed_despite_failures проставили ПОСЛЕ
+    generate, до report); иначе — то, что уже зафиксировано в
+    manifest["vision_check"] (generate/score стадией); None — study без
+    визуальных стимулов вовсе. В ОТЛИЧИЕ от manifest["controls"] (см.
+    load_or_init_manifest) вердикт пробы зрения НЕ завязан на seed/случайность —
+    пересчёт из файла на каждой стадии безопасен (не нужно "замораживать").
+    """
+    vc_path = run_dir / VISION_CHECK_YAML_NAME
+    if vc_path.exists():
+        vc = load_vision_check(run_dir)
+        if vc is not None and not vision_check_is_pending(vc):
+            return compute_vision_verdicts(vc)
+    return manifest.get("vision_check")
+
+
 def run_report_stage(
     run_dir: Path,
     study: dict,
@@ -933,6 +1732,14 @@ def run_report_stage(
     mode_badge = MODE_BADGE_RU[mode]
     controls_status_line = compute_controls_status_line(controls_manifest, controls_verdict)
     controls_failed_banner = compute_controls_failed_banner(controls_verdict)
+
+    # §1.1/1.2 v1.4: stimulus_kind/vision_verdict — фолбэк "text"/None для
+    # прогонов до v1.4 (manifest без этих полей), см. report_template.md
+    # "ЧТО МЕНЯЕТСЯ ДЛЯ REPORT.PY (v1.4...)" п.10/13.
+    stimulus_kind = manifest.get("stimulus_kind", "text")
+    vision_verdict = resolve_vision_verdict(run_dir, manifest)
+    if vision_verdict is not None:  # не засорять manifest пустым полем у текстовых study
+        manifest["vision_check"] = vision_verdict
 
     gen_stage = manifest.get("stages", {}).get("generate", {})
     score_stage = manifest.get("stages", {}).get("score", {})
@@ -994,6 +1801,13 @@ def run_report_stage(
         "MODE_BADGE": mode_badge,
         "CONTROLS_STATUS_LINE": controls_status_line,
         "CONTROLS_FAILED_BANNER": controls_failed_banner,
+        # v1.4 §1.1/1.2 (report_template.md, п.10-13, [B3]/[B1] — см. комментарий
+        # у resolve_vision_verdict/compute_stimulus_kind_line выше за контрактом):
+        "STIMULUS_KIND_LINE": compute_stimulus_kind_line(stimulus_kind, vision_verdict),
+        "STIMULUS_KIND": stimulus_kind,
+        "VISION_CHECK_SECTION": compute_vision_check_section(vision_verdict),
+        "VISION_CHECK_STATUS_LINE": compute_vision_check_status_line(vision_verdict),
+        "VISION_CHECK_FAILED_BANNER": compute_vision_check_failed_banner(vision_verdict),
         # report_template.md (v1.3) содержит иллюстративный абзац "Пример
         # `{{ASCII_BAR}}` (не обязателен побуквенно...)" СРАЗУ ПОСЛЕ
         # <!-- APPENDIX_TABLE_END --> (вне маркера, а не внутри него, как было в
@@ -1024,6 +1838,7 @@ def run_report_stage(
         bootstrap_seed=bootstrap_seed,
         controls_verdict=controls_verdict,
         sibling_rankings_by_segment=sibling_rankings_by_segment,
+        vision_verdict=vision_verdict,
     )
 
     # §1.5: manifest.json ВСЕГДА содержит (к концу --stage report) mode/model —
@@ -1107,6 +1922,19 @@ def main() -> None:
     validate_study_schema(study, study_path)
     validate_study_type(study)
 
+    # §1.1 v1.4: схема/валидация визуальных стимулов (image/label/key_element) —
+    # мутирует study["stimuli"] IN PLACE (image -> абсолютный разрешённый путь),
+    # см. validate_and_resolve_stimuli. Печатается ОДИН раз здесь на каждый вызов
+    # CLI (не только при первой инициализации run_dir) — предупреждение о
+    # непараллельности полезно видеть на любой стадии, не только на generate.
+    try:
+        stimuli_info = validate_and_resolve_stimuli(study, study_path, skill_root)
+    except ValueError as exc:
+        print(f"ОШИБКА: {exc}", file=sys.stderr)
+        sys.exit(1)
+    if stimuli_info.get("image_parallelism_warning"):
+        print(f"-- ПРЕДУПРЕЖДЕНИЕ (§1.1 непараллельность изображений): {stimuli_info['image_parallelism_warning']}")
+
     if args.respondents_per_segment is not None:
         print(
             f"-- Override: respondents_per_segment {study['respondents_per_segment']} -> "
@@ -1129,7 +1957,7 @@ def main() -> None:
 
     run_dir = resolve_run_dir(args.run_dir, skill_root, study["name"], args.stage)
     run_dir.mkdir(parents=True, exist_ok=True)
-    manifest = load_or_init_manifest(run_dir, study, config, study_path, skill_root)
+    manifest = load_or_init_manifest(run_dir, study, config, study_path, skill_root, stimuli_info)
 
     # §1.5: anchors_version — верхнеуровневый контрактный manifest-field, проставляется
     # на КАЖДОМ вызове (дёшево, читаем то, что уже загрузили выше). Толерантно к месту,

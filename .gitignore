@@ -29,3 +29,6 @@ __pycache__/
 /studies/biotinal*
 /runs/biotinal*
 /panel/segments/biotinal*/
+
+# Эталонный визуальный пилот (синтетические макеты «ДемоБренда») — публикуется
+!/runs/visual_smoke_20260719-2029/

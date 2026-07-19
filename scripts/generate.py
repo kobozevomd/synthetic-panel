@@ -62,7 +62,16 @@ chain-of-thought; задание — стимул + question ИЗ ШКАЛЫ anc
                          внутри объекта хранит переводы строк как \n, это не нарушает формат).
                          Хранится целиком для аудита (spec §1.1).
     stimulus_id    str
-    stimulus_text  str
+    stimulus_text  str   может быть пустой строкой для image-only стимула (см. ниже)
+    image_path     str | null   НОВОЕ v1.4 (spec_synthetic-panel_v1.4.md §1.1/1.3): абсолютный
+                         путь к файлу изображения стимула (уже разрешён и провалидирован
+                         run_study.py::validate_and_resolve_stimuli), null для чисто текстовых
+                         стимулов. Agent-режим: ведущая модель обязана прочитать (Read) файл по
+                         этому пути ПЕРЕД тем как писать ответ персоны для строки — см.
+                         AGENT_TASK_TEMPLATE, раздел "Визуальные стимулы".
+    label          str | null   короткая подпись стимула (обязательна в study.yaml для
+                         image-only стимулов — без неё нечем подписать таблицу в отчёте);
+                         null, если не задана (текстовый/смешанный стимул без явной подписи).
     question       str   ТОЛЬКО формулировка вопроса шкалы, без якорных фраз
     respondent_idx int   1..respondents_per_segment
     sample_idx     int   1..samples_per_respondent
@@ -77,10 +86,24 @@ chain-of-thought; задание — стимул + question ИЗ ШКАЛЫ anc
 В agent-режиме responses.jsonl создаёт сам агент/человек на основе responses_todo.jsonl
 (добавляя text/provider/model/request_id/generated_at) — см. AGENT_TASK.md, который
 пишет write_agent_mode().
+
+ВИЗУАЛЬНЫЕ СТИМУЛЫ (spec_synthetic-panel_v1.4.md §1.3, Модуль 1). Промпт задания
+(build_task_prompt) меняет ТОЛЬКО формулировку "вот что тебе показывают" в зависимости от
+наличия image_path/label — персона по-прежнему не видит якорных фраз, CoT запрещён, роль не
+меняется (build_system_prompt/build_persona_card — БЕЗ изменений, персона одна и та же
+что для текстовых, что для визуальных стимулов). API-режим: сам файл изображения уходит
+ОТДЕЛЬНЫМ image-блоком в вызове провайдера (BaseProvider.generate(..., image_path=...)) —
+см. build_anthropic_image_block/build_openai_image_block ниже; agent-режим передаёт путь
+к файлу текстом в responses_todo.jsonl, файл читает (Read) ведущая модель сама. Проба
+зрения (§1.2, "00_vision_check.yaml") — отдельная, БОЛЕЕ РАННЯЯ стадия, целиком в
+run_study.py (описание изображения БЕЗ роли персоны — другой system prompt, см.
+VISION_CHECK_SYSTEM_PROMPT/describe_image_via_provider ниже, вызываемые ИЗ run_study.py
+ДО generate_responses).
 """
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import logging
@@ -139,10 +162,20 @@ def jitter_persona(segment: dict, segment_id: str, respondent_idx: int, seed: in
         age_lo, age_hi = age_hi, age_lo
     age = rng.randint(age_lo, age_hi)
 
-    income_options = jitter.get("income_level") or ["средний доход"]
+    # РЕШЕНО [review v1.3, находка №5 MINOR]: дефолты — те же МАШИННЫЕ токены
+    # (_INCOME_LEVEL_RU/_CITY_TIER_RU ключи), что и реальные значения из
+    # persona_jitter сегментов, а НЕ уже готовый русский текст. До этой правки
+    # дефолт был литералом "средний доход"/"крупный город" — _translate_jitter_token
+    # не находил его в словаре (ключи словаря — "average"/"big_city") и на КАЖДОМ
+    # респонденте сегмента без persona_jitter писал в лог ложный warning "токен
+    # ... отсутствует в словаре перевода", хотя итоговый текст карточки был и
+    # раньше корректен (случайное совпадение "уже по-русски"). Теперь дефолт
+    # проходит ЧЕРЕЗ тот же путь перевода, что и обычные сегменты — единственный
+    # путь получения русского текста, без обходной короткой цепочки.
+    income_options = jitter.get("income_level") or ["average"]
     income = rng.choice(income_options)
 
-    city_options = jitter.get("city_tier") or ["крупный город"]
+    city_options = jitter.get("city_tier") or ["big_city"]
     city = rng.choice(city_options)
 
     gender_options = jitter.get("gender")
@@ -421,15 +454,44 @@ def build_system_prompt(profile: dict, segment: dict) -> str:
     )
 
 
-def build_task_prompt(stimulus_text: str, question: str) -> str:
+def build_task_prompt(
+    stimulus_text: str,
+    question: str,
+    *,
+    image_path: Optional[str] = None,
+    label: Optional[str] = None,
+) -> str:
     """
-    Задание (§5): стимул + question. `question` — ТОЛЬКО формулировка вопроса шкалы из
-    anchors_ru.yaml (поле `question`), передаётся вызывающим кодом (run_study.py) как
-    простая строка. Якорные фразы (anchor_sets/phrases) сюда НИКОГДА не должны попадать —
-    вызывающий код обязан передавать question, а не что-либо ещё из anchors_ru.yaml.
+    Задание (§5, расширено spec_synthetic-panel_v1.4.md §1.3 — визуальные стимулы):
+    стимул (+ изображение, если задано) + question. `question` — ТОЛЬКО формулировка
+    вопроса шкалы из anchors_ru.yaml (поле `question`), передаётся вызывающим кодом
+    (run_study.py) как простая строка. Якорные фразы (anchor_sets/phrases) сюда
+    НИКОГДА не должны попадать — вызывающий код обязан передавать question, а не
+    что-либо ещё из anchors_ru.yaml.
+
+    image_path/label — НОВОЕ v1.4, оба по умолчанию None (ОБРАТНАЯ СОВМЕСТИМОСТЬ:
+    старый вызов build_task_prompt(text, question) без этих аргументов даёт БАЙТ-В-БАЙТ
+    тот же текст, что и до v1.4 — ветка "иначе" ниже не менялась). image_path сам файл
+    в текст промпта НЕ встраивает (это делает BaseProvider.generate через отдельный
+    image-блок, см. generate_responses) — здесь только формулировка "вот что показывают"
+    меняется на явное упоминание приложенного макета/изображения:
+      - image + непустой text (смешанный стимул) — текст цитируется, как и раньше, но
+        с явной пометкой "макет/изображение приложено";
+      - image без text (image-only, label ОБЯЗАТЕЛЕН в study.yaml — см.
+        run_study.py::validate_and_resolve_stimuli) — цитируется label вместо text;
+      - ни один из случаев выше — классический текстовый стимул, форматирование БЕЗ
+        изменений с v1.3.
     """
+    has_text = bool((stimulus_text or "").strip())
+    if image_path and has_text:
+        shown = f"Вот макет/изображение (приложено файлом), с текстом на нём или рядом: «{stimulus_text}»"
+    elif image_path:
+        caption = (label or "").strip() or "(без подписи)"
+        shown = f"Вот макет/изображение (приложено файлом), подпись: «{caption}»"
+    else:
+        shown = f"Вот что тебе показывают:\n«{stimulus_text}»"
     return (
-        f"Вот что тебе показывают:\n«{stimulus_text}»\n\n"
+        f"{shown}\n\n"
         f"{question}\n\n"
         "Ответь свободным текстом, своими словами, БЕЗ числовой оценки и БЕЗ баллов по шкале."
     )
@@ -451,6 +513,10 @@ class ResponseTask:
     respondent_idx: int
     sample_idx: int
     system_prompt: str  # нужен только API-провайдерам; в responses_todo.jsonl не пишется
+    # НОВОЕ v1.4 (§1.1/1.3 spec_synthetic-panel_v1.4.md) — оба по умолчанию None,
+    # т.е. полностью обратно совместимы со study.yaml без визуальных стимулов.
+    image_path: Optional[str] = None  # абсолютный путь к файлу (уже разрешён run_study.py)
+    label: Optional[str] = None  # короткая подпись стимула (обязательна для image-only)
 
 
 def build_tasks(
@@ -471,6 +537,11 @@ def build_tasks(
             persona_card = build_persona_card(profile, segment)
             system_prompt = build_system_prompt(profile, segment)
             for stimulus in study["stimuli"]:
+                # v1.4 §1.1: text может отсутствовать у image-only стимула (только
+                # image+label обязательны) — .get с дефолтом "", не stimulus["text"].
+                stimulus_text = stimulus.get("text", "") or ""
+                image_path = stimulus.get("image")
+                label = stimulus.get("label")
                 for sample_idx in range(1, samples_per_respondent + 1):
                     rid = f"{segment_id}__{stimulus['id']}__{respondent_idx:03d}__{sample_idx}"
                     tasks.append(
@@ -479,11 +550,13 @@ def build_tasks(
                             segment=segment_id,
                             persona=persona_card,
                             stimulus_id=stimulus["id"],
-                            stimulus_text=stimulus["text"],
+                            stimulus_text=stimulus_text,
                             question=question,
                             respondent_idx=respondent_idx,
                             sample_idx=sample_idx,
                             system_prompt=system_prompt,
+                            image_path=image_path,
+                            label=label,
                         )
                     )
     return tasks
@@ -498,6 +571,49 @@ class ProviderError(RuntimeError):
     """Ошибка провайдера генерации: отсутствие ключа/пакета, исчерпанные ретраи и т.п."""
 
 
+# Визуальные стимулы (spec_synthetic-panel_v1.4.md §1.1/1.3) — image-блоки для
+# anthropic/openai. Чистые функции (файл -> base64/mime), НИКАКОГО сетевого вызова —
+# тестируются напрямую, без API-ключей и без мока сети (см. test_generate.py).
+_IMAGE_MIME_BY_EXT = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg"}
+
+
+def _image_mime_type(path: Path) -> str:
+    ext = path.suffix.lower()
+    if ext not in _IMAGE_MIME_BY_EXT:
+        raise ProviderError(
+            f"Неподдерживаемый формат изображения: {ext!r} (файл {path}). "
+            f"Разрешены: {sorted(_IMAGE_MIME_BY_EXT)} (см. run_study.py::IMAGE_EXTENSIONS — "
+            "формат уже должен был быть отсеян валидацией study.yaml, эта проверка — "
+            "защита от прямого вызова провайдера в обход run_study.py)."
+        )
+    return _IMAGE_MIME_BY_EXT[ext]
+
+
+def encode_image_base64(image_path: str) -> tuple[str, str]:
+    """
+    Возвращает (base64_data, mime_type) для файла изображения стимула — общая
+    функция для anthropic/openai image-блоков ниже. Чистое чтение файла с диска +
+    кодирование, БЕЗ сетевого вызова — image_path уже абсолютный и провалидирован
+    run_study.py::validate_and_resolve_stimuli к моменту вызова.
+    """
+    path = Path(image_path)
+    mime = _image_mime_type(path)
+    data = base64.standard_b64encode(path.read_bytes()).decode("ascii")
+    return data, mime
+
+
+def build_anthropic_image_block(image_path: str) -> dict:
+    """Anthropic Messages API — блок изображения (base64), см. §1.3."""
+    data, mime = encode_image_base64(image_path)
+    return {"type": "image", "source": {"type": "base64", "media_type": mime, "data": data}}
+
+
+def build_openai_image_block(image_path: str) -> dict:
+    """OpenAI Chat Completions API — блок изображения (data: URL, base64), см. §1.3."""
+    data, mime = encode_image_base64(image_path)
+    return {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{data}"}}
+
+
 @dataclass
 class GenerationResult:
     text: str
@@ -509,7 +625,19 @@ class BaseProvider(ABC):
     name: str = "base"
 
     @abstractmethod
-    def generate(self, system_prompt: str, user_prompt: str, temperature: float) -> GenerationResult:
+    def generate(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        temperature: float,
+        image_path: Optional[str] = None,
+    ) -> GenerationResult:
+        """
+        image_path — НОВОЕ v1.4 (§1.3), по умолчанию None (текстовый стимул,
+        поведение БЕЗ изменений с v1.3). Если задан — реализация обязана
+        приложить файл отдельным image-блоком (см. build_anthropic_image_block/
+        build_openai_image_block), а НЕ встраивать путь текстом в user_prompt.
+        """
         raise NotImplementedError
 
 
@@ -535,7 +663,20 @@ class AnthropicProvider(BaseProvider):
         self.max_tokens = max_tokens
         self.max_retries = max_retries
 
-    def generate(self, system_prompt: str, user_prompt: str, temperature: float) -> GenerationResult:
+    def generate(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        temperature: float,
+        image_path: Optional[str] = None,
+    ) -> GenerationResult:
+        # §1.3: image_path задан -> content становится списком блоков (изображение
+        # + текст задания), иначе content — простая строка, как в v1.3 (без изменений).
+        content = (
+            [build_anthropic_image_block(image_path), {"type": "text", "text": user_prompt}]
+            if image_path
+            else user_prompt
+        )
         last_err: Optional[Exception] = None
         for attempt in range(self.max_retries):
             try:
@@ -544,7 +685,7 @@ class AnthropicProvider(BaseProvider):
                     max_tokens=self.max_tokens,
                     temperature=temperature,
                     system=system_prompt,
-                    messages=[{"role": "user", "content": user_prompt}],
+                    messages=[{"role": "user", "content": content}],
                 )
                 text = "".join(
                     block.text for block in resp.content if getattr(block, "type", None) == "text"
@@ -583,7 +724,21 @@ class OpenAIProvider(BaseProvider):
         self.max_tokens = max_tokens
         self.max_retries = max_retries
 
-    def generate(self, system_prompt: str, user_prompt: str, temperature: float) -> GenerationResult:
+    def generate(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        temperature: float,
+        image_path: Optional[str] = None,
+    ) -> GenerationResult:
+        # §1.3: та же логика, что у AnthropicProvider выше — image_path задан ->
+        # user-контент становится списком блоков (текст + image_url), иначе
+        # простая строка (без изменений с v1.3).
+        user_content = (
+            [{"type": "text", "text": user_prompt}, build_openai_image_block(image_path)]
+            if image_path
+            else user_prompt
+        )
         last_err: Optional[Exception] = None
         for attempt in range(self.max_retries):
             try:
@@ -593,7 +748,7 @@ class OpenAIProvider(BaseProvider):
                     max_tokens=self.max_tokens,
                     messages=[
                         {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_prompt},
+                        {"role": "user", "content": user_content},
                     ],
                 )
                 text = resp.choices[0].message.content or ""
@@ -654,14 +809,35 @@ class GigaChatProvider(BaseProvider):
             "См. docstring класса и research/2026-07-08/06_tech_implementation.md (часть В.3)."
         )
 
-    def generate(self, system_prompt: str, user_prompt: str, temperature: float) -> GenerationResult:
+    def generate(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        temperature: float,
+        image_path: Optional[str] = None,
+    ) -> GenerationResult:
         """
         TODO(интегратор): после реализации _ensure_token() — POST {CHAT_URL} с телом
         {"model": self.model, "temperature": temperature, "messages": [
             {"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}
         ]}, заголовок 'Authorization: Bearer {token}'. Ретраи/бэкофф — по образцу
         AnthropicProvider.generate()/OpenAIProvider.generate() выше.
+
+        image_path (spec_synthetic-panel_v1.4.md §1.3): визуальные стимулы ЭТИМ
+        провайдером пока НЕ поддержаны — честная, отдельная от TODO выше ошибка
+        (ProviderError, не NotImplementedError) ДО попытки любого REST-вызова, чтобы
+        run_study.py мог отличить "визуальные стимулы не поддержаны" от "провайдер
+        вообще не реализован" (тот же паттерн API, что и текстовые вызовы — просто
+        текст стимула ЕЩЁ и не реализован, а изображение НЕ БУДЕТ поддержано этим
+        провайдером даже после реализации TODO выше, пока GigaChat API не даст
+        официальный vision-режим).
         """
+        if image_path:
+            raise ProviderError(
+                "GigaChatProvider: визуальные стимулы пока не поддержаны этим провайдером "
+                "(spec_synthetic-panel_v1.4.md §1.3) — используйте provider: agent/anthropic/"
+                "openai для исследований с изображениями."
+            )
         raise NotImplementedError(
             "GigaChatProvider.generate: REST-вызов чата не реализован (TODO для интегратора). "
             "Интерфейс (BaseProvider.generate) готов к подключению — "
@@ -681,6 +857,73 @@ def get_provider(name: str, config: dict) -> BaseProvider:
     raise ProviderError(
         f"Неизвестный провайдер: {name!r}. Ожидается один из: agent, anthropic, openai, gigachat."
     )
+
+
+# ============================================================================
+# Проба зрения, API-режим (spec_synthetic-panel_v1.4.md §1.2)
+# ============================================================================
+#
+# Вызывается ИЗ run_study.py (владелец стадии/gate — см. run_study.py::
+# ensure_vision_check в докстринге раздела "Проба зрения"), ДО generate_responses.
+# System prompt здесь НАРОЧНО другой, чем build_system_prompt: НИКАКОЙ роли персоны
+# — это отдельный, нейтральный "визуальный ассистент", который описывает
+# изображение объективно (§1.2: "модель БЕЗ роли персоны описывает каждое
+# изображение"). Agent-режим эту функцию не вызывает вообще — там описание
+# пишет сама ведущая модель, читая файл (Read) и заполняя 00_vision_check.yaml
+# вручную (см. run_study.py::VISION_CHECK_STOP_PENDING).
+
+VISION_CHECK_SYSTEM_PROMPT = (
+    "Ты — визуальный ассистент, а не персона респондента и не участник опроса. "
+    "Опиши приложенное изображение ОБЪЕКТИВНО и нейтрально: что на нём "
+    "изображено (продукт/упаковка/макет), какой текст на нём читается, ключевые "
+    "визуальные элементы, композиция, цвета. НЕ оценивай привлекательность, НЕ "
+    "изображай персону/реакцию человека, НЕ рассуждай пошагово. 2-5 предложений, "
+    "по-русски."
+)
+
+VISION_CHECK_USER_PROMPT = "Опиши это изображение."
+
+
+def describe_image_via_provider(provider: BaseProvider, image_path: str) -> str:
+    """
+    §1.2, API-режим: один vision-вызов провайдера для описания ОДНОГО изображения
+    БЕЗ роли персоны (VISION_CHECK_SYSTEM_PROMPT — не build_system_prompt). Низкая
+    temperature (0.2, не config.llm.temperature персон) — здесь нужно фактическое,
+    воспроизводимое описание, а не разговорная вариативность ответа персоны.
+    GigaChatProvider.generate сам бросит понятный ProviderError про неподдержку
+    image_path (см. класс выше) — эта функция его не перехватывает намеренно,
+    вызывающий код (run_study.py) должен увидеть ошибку как есть.
+    """
+    result = provider.generate(
+        VISION_CHECK_SYSTEM_PROMPT,
+        VISION_CHECK_USER_PROMPT,
+        temperature=0.2,
+        image_path=image_path,
+    )
+    return result.text
+
+
+def fill_vision_check_descriptions(vision_check: dict, provider: BaseProvider) -> None:
+    """
+    Заполняет ПУСТЫЕ `description` в vision_check["images"] реальным vision-вызовом
+    (§1.2, API-режим) — МУТИРУЕТ vision_check IN PLACE (вызывающий код — run_study.py
+    — сам сохраняет результат на диск). Уже непустые описания не трогает (например,
+    если часть изображений уже была описана вручную до переключения на API-режим).
+    `key_element_recognized` эта функция НЕ трогает — оставляет как есть (обычно
+    None), решение "распознан ли key_element" принимает run_study.py::
+    compute_vision_verdicts единой эвристикой для agent- и API-режима (см. её докстринг).
+
+    `vision_check_source` (v1.4 fix, см. run_study.py::_vision_check_stub/
+    "Известное ограничение agent-режима пробы зрения" в докстринге модуля
+    run_study.py) — ставится в "api_vision" именно здесь: это единственная точка
+    кода, где provider реально получает пиксели изображения (image_path в
+    provider.generate) для описания, а не полагается на самоотчёт агента.
+    """
+    for image in vision_check.get("images", []):
+        if (image.get("description") or "").strip():
+            continue
+        image["description"] = describe_image_via_provider(provider, image["image_path"])
+        image["vision_check_source"] = "api_vision"
 
 
 # ============================================================================
@@ -720,13 +963,13 @@ AGENT_TASK_TEMPLATE = """\
   (это имитирует temperature > 0 у реального API) — не копируй текст дословно между сэмплами.
 - НЕ вставляй в ответ якорные фразы шкалы — их в задании и нет намеренно (утечка шкалы
   испортила бы измерение).
-
+{visual_section}
 ## Формат строки на выходе
 
 Пример (поля — как во входной строке, плюс text/provider/model/request_id/generated_at):
 
 ```json
-{{"rid": "dessertnye__A__001__1", "segment": "dessertnye", "persona": "...", "stimulus_id": "A", "stimulus_text": "...", "question": "...", "respondent_idx": 1, "sample_idx": 1, "text": "Свободный текст ответа персоны здесь.", "provider": "agent", "model": null, "request_id": null, "generated_at": "2026-07-09T12:00:00+00:00"}}
+{{"rid": "dessertnye__A__001__1", "segment": "dessertnye", "persona": "...", "stimulus_id": "A", "stimulus_text": "...", "image_path": null, "label": null, "question": "...", "respondent_idx": 1, "sample_idx": 1, "text": "Свободный текст ответа персоны здесь.", "provider": "agent", "model": null, "request_id": null, "generated_at": "2026-07-09T12:00:00+00:00"}}
 ```
 
 ## Когда закончишь
@@ -736,6 +979,34 @@ AGENT_TASK_TEMPLATE = """\
 ```
 python scripts/run_study.py --study {study_path} --stage score --run-dir {run_dir}
 ```
+"""
+
+
+# Вставляется в AGENT_TASK_TEMPLATE (плейсхолдер {visual_section}) ТОЛЬКО когда
+# среди задач есть хотя бы одна с image_path — см. write_agent_mode. Для чисто
+# текстовых study даёт visual_section="" -> AGENT_TASK.md байт-в-байт как до v1.4
+# (плейсхолдер сидит на месте прежней пустой строки-разделителя, см. комментарий
+# в write_agent_mode).
+VISUAL_STIMULI_NOTE = """
+## Визуальные стимулы
+
+У части строк этого задания непустое поле `image_path` — абсолютный путь к файлу
+PNG/JPG на диске (изображение стимула, уже провалидировано run_study.py). Правила:
+
+- ПЕРЕД тем как писать ответ персоны для такой строки, прочитайте файл по этому
+  пути (инструмент чтения файла) — персона реагирует на РЕАЛЬНЫЙ визуальный ряд
+  макета/дизайна/упаковки, а не только на текст.
+- Не придумывайте детали, которых не видно на изображении.
+- Если `stimulus_text` пусто, а `label` заполнено — это короткая подпись стимула
+  для контекста (не текст для дословного цитирования персоне).
+- Все правила выше (роль/CoT/отсутствие якорей) действуют без изменений и для
+  визуальных строк.
+- Проба зрения (объективное описание каждого изображения БЕЗ роли персоны) уже
+  пройдена ДО этого файла — см. `00_vision_check.md` в этой же папке, если нужно
+  свериться с тем, что уже отмечено на макетах.
+
+Строки без `image_path` (или с `image_path: null`) — обычные текстовые задания,
+никаких изменений.
 """
 
 
@@ -753,6 +1024,8 @@ def write_agent_mode(tasks: list[ResponseTask], run_dir: Path, study_path: str) 
                 "persona": task.persona,
                 "stimulus_id": task.stimulus_id,
                 "stimulus_text": task.stimulus_text,
+                "image_path": task.image_path,
+                "label": task.label,
                 "question": task.question,
                 "respondent_idx": task.respondent_idx,
                 "sample_idx": task.sample_idx,
@@ -760,6 +1033,7 @@ def write_agent_mode(tasks: list[ResponseTask], run_dir: Path, study_path: str) 
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
     task_md_path = run_dir / "AGENT_TASK.md"
+    visual_section = VISUAL_STIMULI_NOTE if any(t.image_path for t in tasks) else ""
     task_md_path.write_text(
         AGENT_TASK_TEMPLATE.format(
             todo_filename="responses_todo.jsonl",
@@ -767,6 +1041,7 @@ def write_agent_mode(tasks: list[ResponseTask], run_dir: Path, study_path: str) 
             n_tasks=len(tasks),
             study_path=study_path,
             run_dir=str(run_dir),
+            visual_section=visual_section,
         ),
         encoding="utf-8",
     )
@@ -828,14 +1103,20 @@ def generate_responses(
     responses_path = run_dir / "responses.jsonl"
     with responses_path.open("w", encoding="utf-8") as f:
         for task in tasks:
-            user_prompt = build_task_prompt(task.stimulus_text, task.question)
-            result = provider.generate(task.system_prompt, user_prompt, temperature)
+            # §1.3 v1.4: image_path/label — оба None для текстовых стимулов, тогда
+            # build_task_prompt/provider.generate ведут себя байт-в-байт как в v1.3.
+            user_prompt = build_task_prompt(
+                task.stimulus_text, task.question, image_path=task.image_path, label=task.label
+            )
+            result = provider.generate(task.system_prompt, user_prompt, temperature, image_path=task.image_path)
             row = {
                 "rid": task.rid,
                 "segment": task.segment,
                 "persona": task.persona,
                 "stimulus_id": task.stimulus_id,
                 "stimulus_text": task.stimulus_text,
+                "image_path": task.image_path,
+                "label": task.label,
                 "question": task.question,
                 "respondent_idx": task.respondent_idx,
                 "sample_idx": task.sample_idx,

@@ -181,6 +181,36 @@ class TestBuildEffectiveStudy(unittest.TestCase):
         effective = run_study.build_effective_study(study, cm)
         self.assertEqual(effective["stimuli"], study["stimuli"])
 
+    def test_image_label_key_element_survive_blinding(self):
+        """
+        РЕГРЕССИЯ (найдена сквозным смоук-тестом визуального пилота v1.4, до
+        этого фикса ускользала от юнит-тестов, где controls были явно
+        отключены): controls ВКЛЮЧЕНЫ ПО УМОЛЧАНИЮ для любого study.yaml — если
+        блиндинг молча теряет image/label/key_element РЕАЛЬНЫХ стимулов, ВСЯ
+        визуальная генерация (§1.3) тихо превращается в текстовую на любом
+        study.yaml без явного `controls: off`.
+        """
+        study = _fake_study()
+        study["stimuli"][0]["image"] = "/abs/a.png"
+        study["stimuli"][0]["label"] = "Вариант А"
+        study["stimuli"][0]["key_element"] = "логотип"
+        cm = run_study.build_controls_manifest(study, _SKILL_ROOT, seed=42)
+        effective = run_study.build_effective_study(study, cm)
+
+        blind_a = cm["real_to_blind"]["A"]
+        stim_a = next(s for s in effective["stimuli"] if s["id"] == blind_a)
+        self.assertEqual(stim_a["image"], "/abs/a.png")
+        self.assertEqual(stim_a["label"], "Вариант А")
+        self.assertEqual(stim_a["key_element"], "логотип")
+
+        # B/плацебо/ловушка не задавали image/label - поля просто отсутствуют
+        # (не None-заглушки), плацебо/ловушка ВСЕГДА чисто текстовые по построению.
+        blind_b = cm["real_to_blind"]["B"]
+        stim_b = next(s for s in effective["stimuli"] if s["id"] == blind_b)
+        self.assertNotIn("image", stim_b)
+        placebo_stim = next(s for s in effective["stimuli"] if s["id"] == cm["placebo"]["blind_id"])
+        self.assertNotIn("image", placebo_stim)
+
 
 class TestUnblindAndSplit(unittest.TestCase):
     def test_roundtrip_through_blind_and_unblind(self):

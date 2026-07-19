@@ -44,6 +44,8 @@ if str(_SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS_DIR))
 
 import report  # noqa: E402
+import run_study  # noqa: E402 - только для TestRenderReportRealTemplate (сквозной v1.4 сценарий:
+# compute_stimulus_kind_line/compute_vision_check_* реально живут в run_study.py, см. докстринг там)
 
 
 def _dummy_pmf(e_value: float) -> list[float]:
@@ -346,6 +348,50 @@ class TestComputeControlsVerdict(unittest.TestCase):
         )
         self.assertEqual(result, {"applicable": False})
 
+    def test_placebo_kind_passthrough_from_manifest(self):
+        """spec_synthetic-panel_v1.4.md §2.2: kind контрастного плацебо (run_study.py::
+        build_controls_manifest) обязан попасть в вердикт как есть."""
+        manifest = self._base_manifest()
+        manifest["placebo"]["kind"] = "empty_promise"
+        result = report.compute_controls_verdict(
+            all_segment_rows=[], all_resp_rows=[], controls_manifest={"enabled": False},
+            segments=["seg1"], bootstrap_iters=100, seed=1,
+        )
+        # controls: off -> applicable=False целиком (placebo_kind сюда не попадает,
+        # но проверяем ЭТУ ветку тоже - результат не должен содержать лишних полей).
+        self.assertEqual(result, {"applicable": False})
+
+        result_on = report.compute_controls_verdict(
+            all_segment_rows=_segment_rows("seg1", {"A": 4.5, "B": 3.0, "__placebo__": 1.0, "__decoy__": 4.4}),
+            all_resp_rows=_resp_rows(
+                "seg1",
+                {
+                    "A": [4.5] * 5, "B": [3.0] * 5,
+                    "__placebo__": [1.0] * 5, "__decoy__": [4.5] * 5,
+                },
+            ),
+            controls_manifest=manifest,
+            segments=["seg1"], bootstrap_iters=200, seed=1,
+        )
+        self.assertEqual(result_on["placebo_kind"], "empty_promise")
+
+    def test_placebo_kind_none_when_absent_from_manifest(self):
+        """Обратная совместимость: controls_manifest без поля kind (прогон до v1.4,
+        или банк ещё не обновлён [B2]) -> placebo_kind None, не падает."""
+        result = report.compute_controls_verdict(
+            all_segment_rows=_segment_rows("seg1", {"A": 4.5, "B": 3.0, "__placebo__": 1.0, "__decoy__": 4.4}),
+            all_resp_rows=_resp_rows(
+                "seg1",
+                {
+                    "A": [4.5] * 5, "B": [3.0] * 5,
+                    "__placebo__": [1.0] * 5, "__decoy__": [4.5] * 5,
+                },
+            ),
+            controls_manifest=self._base_manifest(),
+            segments=["seg1"], bootstrap_iters=200, seed=1,
+        )
+        self.assertIsNone(result["placebo_kind"])
+
     def test_passes_when_placebo_bottom_and_decoy_indistinguishable(self):
         seg_rows = _segment_rows("seg1", {"A": 4.5, "B": 3.0, "__placebo__": 1.2, "__decoy__": 4.4})
         rng = np.random.default_rng(0)
@@ -590,6 +636,146 @@ class TestRenderSmoke(unittest.TestCase):
         self.assertIn("прогон не прошёл самоконтроль", note)
         self.assertIn("ПРОВАЛ", note)
 
+    def test_render_controls_verdict_detail_shows_placebo_kind_when_present(self):
+        """spec_synthetic-panel_v1.4.md §2.2 — kind контрастного плацебо видим в
+        детализации самоконтроля, если задан; не показан вовсе, если нет (прогон
+        до v1.4/банк без kind, см. test_render_controls_verdict_detail_passed выше,
+        который не задаёт placebo_kind и по-прежнему проходит)."""
+        verdict = {
+            "applicable": True,
+            "controls_failed": False,
+            "decoy_of": "A",
+            "placebo_kind": "irrelevant",
+            "per_segment": [
+                {
+                    "segment": "seg1", "placebo_rank": 4, "placebo_n_total": 4,
+                    "placebo_ok": True, "decoy_label": "в пределах шума", "decoy_ok": True,
+                }
+            ],
+        }
+        note = report.render_controls_verdict_detail(verdict)
+        self.assertIn("kind=«irrelevant»", note)
+
+
+class TestStimulusDisplayText(unittest.TestCase):
+    """spec_synthetic-panel_v1.4.md §1.1 (report_template.md, п.14) — подпись
+    стимула для таблиц отчёта: text, иначе label (image-only), иначе id."""
+
+    def test_uses_text_when_present(self):
+        self.assertEqual(report.stimulus_display_text({"id": "A", "text": "Текст стимула"}), "Текст стимула")
+
+    def test_falls_back_to_label_when_text_empty(self):
+        self.assertEqual(
+            report.stimulus_display_text({"id": "A", "text": "", "label": "Вариант синий", "image": "/x.png"}),
+            "Вариант синий",
+        )
+
+    def test_falls_back_to_label_when_text_absent(self):
+        self.assertEqual(
+            report.stimulus_display_text({"id": "A", "label": "Вариант синий", "image": "/x.png"}),
+            "Вариант синий",
+        )
+
+    def test_falls_back_to_id_when_neither_text_nor_label(self):
+        self.assertEqual(report.stimulus_display_text({"id": "A"}), "A")
+
+    def test_prefers_text_over_label_when_both_present(self):
+        self.assertEqual(
+            report.stimulus_display_text({"id": "A", "text": "Текст", "label": "Метка"}), "Текст"
+        )
+
+
+class TestRenderVisionCheckDetail(unittest.TestCase):
+    """spec_synthetic-panel_v1.4.md §1.2 — детализация пробы зрения ПО СТИМУЛАМ
+    для "## Приложение" (report.render_vision_check_detail)."""
+
+    def _verdict(self, vision_failed: bool, confirmed: bool = False) -> dict:
+        return {
+            "vision_failed": vision_failed,
+            "failed_stimulus_ids": ["A"] if vision_failed else [],
+            "confirmed_despite_failures": confirmed,
+            "per_image": [
+                {
+                    "image_path": "/abs/path/a.png",
+                    "stimulus_ids": ["A"],
+                    "description": "На макете кружка с логотипом.",
+                    "key_element_by_stimulus": {"A": "кружка"},
+                    "per_stimulus_verdict": {"A": "vision_failed" if vision_failed else "ok"},
+                },
+                {
+                    "image_path": "/abs/path/b.png",
+                    "stimulus_ids": ["B"],
+                    "description": "Макет без текста.",
+                    "key_element_by_stimulus": {},
+                    "per_stimulus_verdict": {"B": "ok"},
+                },
+            ],
+        }
+
+    def test_passed_verdict_smoke(self):
+        md = report.render_vision_check_detail(self._verdict(vision_failed=False))
+        self.assertIn("пройдена", md)
+        self.assertIn("a.png", md)
+        self.assertIn("b.png", md)
+        # B: стимул БЕЗ key_element - вердикт всё равно "ok" (нечего проверять,
+        # см. compute_vision_verdicts), а не "провал по умолчанию".
+        self.assertIn("B: OK", md)
+
+    def test_image_with_no_stimulus_ids_shows_na_fallback(self):
+        """Защитный fallback render_vision_check_detail: запись изображения без
+        per_stimulus_verdict вовсе (не должно возникать через штатный
+        compute_vision_verdicts, но не должно и падать при ручной правке файла)."""
+        verdict = {
+            "vision_failed": False,
+            "failed_stimulus_ids": [],
+            "confirmed_despite_failures": False,
+            "per_image": [
+                {
+                    "image_path": "/abs/c.png", "stimulus_ids": [], "description": "…",
+                    "key_element_by_stimulus": {}, "per_stimulus_verdict": {},
+                }
+            ],
+        }
+        md = report.render_vision_check_detail(verdict)
+        self.assertIn("н/д (key_element не задан", md)
+
+    def test_failed_verdict_shows_provalen_marker_and_table(self):
+        md = report.render_vision_check_detail(self._verdict(vision_failed=True))
+        self.assertIn("провалена", md)
+        self.assertIn("ПРОВАЛ", md)
+
+    def test_appendix_table_section_includes_vision_detail_when_provided(self):
+        rng = np.random.default_rng(0)
+        shared = rng.normal(0, 0.15, size=10)
+        resp_rows = _resp_rows("seg1", {"A": list(4.5 + shared), "B": list(3.0 + shared)})
+        seg_rows = _segment_rows("seg1", {"A": 4.5, "B": 3.0})
+        study = {
+            "stimuli": [{"id": "A", "text": "Стимул А"}, {"id": "B", "text": "Стимул Б"}],
+            "segments": ["seg1"],
+        }
+        segments = {"seg1": {"name": "Сегмент 1"}}
+
+        md = report.render_appendix_table_section(
+            seg_rows, resp_rows, study, segments, 1500, 42,
+            controls_verdict=None, vision_verdict=self._verdict(vision_failed=False),
+        )
+        self.assertIn("Проба зрения", md)
+        self.assertIn("a.png", md)
+
+    def test_appendix_table_section_omits_vision_detail_when_none(self):
+        rng = np.random.default_rng(0)
+        shared = rng.normal(0, 0.15, size=10)
+        resp_rows = _resp_rows("seg1", {"A": list(4.5 + shared), "B": list(3.0 + shared)})
+        seg_rows = _segment_rows("seg1", {"A": 4.5, "B": 3.0})
+        study = {
+            "stimuli": [{"id": "A", "text": "Стимул А"}, {"id": "B", "text": "Стимул Б"}],
+            "segments": ["seg1"],
+        }
+        segments = {"seg1": {"name": "Сегмент 1"}}
+
+        md = report.render_appendix_table_section(seg_rows, resp_rows, study, segments, 1500, 42)
+        self.assertNotIn("Проба зрения", md)
+
 
 class TestRenderReportRealTemplate(unittest.TestCase):
     """
@@ -646,6 +832,15 @@ class TestRenderReportRealTemplate(unittest.TestCase):
             "CONTROLS_STATUS_LINE": "плацебо и ловушка на своих местах — самоконтроль пройден",
             "CONTROLS_FAILED_BANNER": "",
             "ASCII_BAR": "▁▂▇▄▁",
+            # v1.4 §1.1/1.2 (report_template.md, [B3]) — фикстура по умолчанию
+            # ТЕКСТОВАЯ (stimulus_kind: "text"): все пять пусты/нейтральны, как
+            # реальный run_study.py::run_report_stage делает для study без
+            # изображений (см. compute_stimulus_kind_line/compute_vision_check_*).
+            "STIMULUS_KIND_LINE": "",
+            "STIMULUS_KIND": "text",
+            "VISION_CHECK_SECTION": "",
+            "VISION_CHECK_STATUS_LINE": "",
+            "VISION_CHECK_FAILED_BANNER": "",
         }
         return study, segments, seg_rows, resp_rows, sample_rows, header_mapping
 
@@ -726,6 +921,105 @@ class TestRenderReportRealTemplate(unittest.TestCase):
         self.assertIn("прогон не прошёл самоконтроль", text)
         self.assertIn("## Приложение", text)
         self.assertNotIn("{{", text)
+
+    def _vision_verdict(self, failed: bool) -> dict:
+        return {
+            "vision_failed": failed,
+            "failed_stimulus_ids": ["A"] if failed else [],
+            "confirmed_despite_failures": failed,
+            "n_stimuli_with_image": 2,
+            "per_image": [
+                {
+                    "image_path": "/abs/a.png", "stimulus_ids": ["A"],
+                    "description": "Макет с кружкой, надпись нечёткая." if failed else "Макет с кружкой и логотипом.",
+                    "key_element_by_stimulus": {"A": "логотип"},
+                    "per_stimulus_verdict": {"A": "vision_failed" if failed else "ok"},
+                },
+                {
+                    "image_path": "/abs/b.png", "stimulus_ids": ["B"],
+                    "description": "Второй макет, схожая композиция.",
+                    "key_element_by_stimulus": {},
+                    "per_stimulus_verdict": {"B": "ok"},
+                },
+            ],
+        }
+
+    def test_render_report_visual_pass_end_to_end(self):
+        """
+        spec_synthetic-panel_v1.4.md §1.1/1.2 (report_template.md, [B3] п.10-14) —
+        сквозной прогон РЕАЛЬНОГО шаблона для визуального study с пройденной
+        пробой зрения: все 5 новых плейсхолдеров должны замениться, НЕ должно
+        остаться "{{" в тексте, и содержательно должны появиться маркеры пометки
+        визуального прогона + аггрегированный статус пробы зрения.
+        """
+        study, segments, seg_rows, resp_rows, sample_rows, header_mapping = self._build_inputs()
+        vision_verdict = self._vision_verdict(failed=False)
+        header_mapping["STIMULUS_KIND"] = "image"
+        header_mapping["STIMULUS_KIND_LINE"] = run_study.compute_stimulus_kind_line("image", vision_verdict)
+        header_mapping["VISION_CHECK_SECTION"] = run_study.compute_vision_check_section(vision_verdict)
+        header_mapping["VISION_CHECK_STATUS_LINE"] = run_study.compute_vision_check_status_line(vision_verdict)
+        header_mapping["VISION_CHECK_FAILED_BANNER"] = run_study.compute_vision_check_failed_banner(vision_verdict)
+
+        text = report.render_report(
+            template_path=self.TEMPLATE_PATH,
+            disclaimers_path=self.DISCLAIMERS_PATH,
+            rows=seg_rows,
+            resp_rows=resp_rows,
+            sample_rows=sample_rows,
+            study=study,
+            segments=segments,
+            scale_name_ru="Готовность купить",
+            scale_id="purchase_intent",
+            header_mapping=header_mapping,
+            bootstrap_iters=500,
+            bootstrap_seed=42,
+            controls_verdict={"applicable": False},
+            vision_verdict=vision_verdict,
+        )
+        self.assertNotIn("{{", text, "остались незамещённые {{...}}-плейсхолдеры")
+        self.assertIn("🖼️ ВИЗУАЛЬНЫЕ", text)
+        self.assertIn("проба зрения: пройдена", text)
+        self.assertIn("**Проба зрения:**", text)
+        self.assertIn("пройдена — ключевые элементы всех вариантов распознаны", text)
+        self.assertIn("00_vision_check.md", text)
+        self.assertNotIn("проба зрения не пройдена", text)  # только для провала
+        # НЕ используем эмодзи 🟢/🔴 в STIMULUS_KIND_LINE (зарезервированы
+        # cjm_lint.py::looks_like_trust_map_report, см. report_template.md п.10).
+        kind_line_start = text.index("**Стимулы:**")
+        kind_line_end = text.index("\n", kind_line_start)
+        kind_line = text[kind_line_start:kind_line_end]
+        self.assertNotIn("🟢", kind_line)
+        self.assertNotIn("🔴", kind_line)
+
+    def test_render_report_visual_failed_end_to_end(self):
+        study, segments, seg_rows, resp_rows, sample_rows, header_mapping = self._build_inputs()
+        vision_verdict = self._vision_verdict(failed=True)
+        header_mapping["STIMULUS_KIND"] = "mixed"
+        header_mapping["STIMULUS_KIND_LINE"] = run_study.compute_stimulus_kind_line("mixed", vision_verdict)
+        header_mapping["VISION_CHECK_SECTION"] = run_study.compute_vision_check_section(vision_verdict)
+        header_mapping["VISION_CHECK_STATUS_LINE"] = run_study.compute_vision_check_status_line(vision_verdict)
+        header_mapping["VISION_CHECK_FAILED_BANNER"] = run_study.compute_vision_check_failed_banner(vision_verdict)
+
+        text = report.render_report(
+            template_path=self.TEMPLATE_PATH,
+            disclaimers_path=self.DISCLAIMERS_PATH,
+            rows=seg_rows,
+            resp_rows=resp_rows,
+            sample_rows=sample_rows,
+            study=study,
+            segments=segments,
+            scale_name_ru="Готовность купить",
+            scale_id="purchase_intent",
+            header_mapping=header_mapping,
+            bootstrap_iters=500,
+            bootstrap_seed=42,
+            controls_verdict={"applicable": False},
+            vision_verdict=vision_verdict,
+        )
+        self.assertNotIn("{{", text, "остались незамещённые {{...}}-плейсхолдеры")
+        self.assertIn("📝🖼️ СМЕШАННЫЕ", text)
+        self.assertIn("проба зрения не пройдена", text)  # контракт-маркер
+        self.assertIn("НЕ пройдена для 1 из", text)
 
 
 if __name__ == "__main__":

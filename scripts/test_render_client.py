@@ -676,6 +676,98 @@ class TestModeBadgeRendering(unittest.TestCase):
         self.assertIn("не размечен в manifest", badge)
 
 
+class TestStimulusKindBadge(unittest.TestCase):
+    """
+    resolve_stimulus_kind()/render_stimulus_kind_badge() (spec_synthetic-panel_v1.4.md
+    §1.1/§1.4) — ИНТЕГРАЦИОННЫЙ ФИКС [F2, v1.4 DoD п.6]: до этого фикса build_html
+    молча теряла строку «Стимулы: 🖼️ ВИЗУАЛЬНЫЕ (проба зрения: ...)» из шапки
+    report.md — она физический simple-абзац преамбулы (не bullet-list, не
+    blockquote), а ни parse_header_meta, ни parse_header_note его не подхватывают
+    (см. докстринг resolve_stimulus_kind). Найдено на реальном end-to-end визуальном
+    пилоте (studies/visual_smoke.yaml), не в этих тестах — тесты ниже фиксируют фикс.
+    """
+
+    def test_resolve_none_manifest_is_text_kind(self):
+        info = rc.resolve_stimulus_kind(None)
+        self.assertEqual(info.kind, "text")
+        self.assertFalse(info.vision_failed)
+        self.assertFalse(info.has_vision_check)
+
+    def test_resolve_manifest_without_stimulus_kind_field_falls_back_to_text(self):
+        info = rc.resolve_stimulus_kind({"mode": "exploratory"})
+        self.assertEqual(info.kind, "text")
+
+    def test_resolve_image_kind_with_passed_vision_check(self):
+        info = rc.resolve_stimulus_kind({"stimulus_kind": "image", "vision_check": {"vision_failed": False}})
+        self.assertEqual(info.kind, "image")
+        self.assertFalse(info.vision_failed)
+        self.assertTrue(info.has_vision_check)
+
+    def test_resolve_mixed_kind_with_failed_vision_check(self):
+        info = rc.resolve_stimulus_kind({"stimulus_kind": "mixed", "vision_check": {"vision_failed": True}})
+        self.assertEqual(info.kind, "mixed")
+        self.assertTrue(info.vision_failed)
+
+    def test_resolve_unknown_kind_value_falls_back_to_text(self):
+        # схема защищена run_study.py, но рендер не должен упасть на мусорном значении
+        info = rc.resolve_stimulus_kind({"stimulus_kind": "garbage"})
+        self.assertEqual(info.kind, "text")
+
+    def test_badge_empty_for_text_kind(self):
+        self.assertEqual(rc.render_stimulus_kind_badge(rc.StimulusKindInfo("text", False, False)), "")
+
+    def test_badge_image_kind_passed(self):
+        badge = rc.render_stimulus_kind_badge(rc.StimulusKindInfo("image", False, True))
+        self.assertIn("badge-visual", badge)
+        self.assertNotIn("badge-visual-warn", badge)
+        self.assertIn("Визуальные стимулы", badge)
+        self.assertIn("проба зрения: пройдена", badge)
+
+    def test_badge_mixed_kind_label(self):
+        badge = rc.render_stimulus_kind_badge(rc.StimulusKindInfo("mixed", False, True))
+        self.assertIn("Смешанные стимулы", badge)
+
+    def test_badge_vision_failed_uses_warn_style(self):
+        badge = rc.render_stimulus_kind_badge(rc.StimulusKindInfo("image", True, True))
+        self.assertIn("badge-visual-warn", badge)
+        self.assertIn("проба зрения: НЕ пройдена", badge)
+
+    def test_build_html_includes_badge_for_image_study_and_omits_for_text_study(self):
+        """
+        Сквозная проверка через build_html() целиком (не только напрямую вызванные
+        resolve/render) — именно build_html молча теряла строку до фикса (см.
+        докстринг класса), поэтому регрессия должна ловиться на этом уровне, а не
+        только на уровне чистых функций.
+        """
+        body = (
+            "**Режим прогона:** 🟡 РАЗВЕДОЧНЫЙ\n\n"
+            "**Стимулы:** 🖼️ ВИЗУАЛЬНЫЕ (проба зрения: пройдена)\n\n"
+            "## Главное\n\nПункт.\n\n---\n\n"
+            "## Границы этого отчёта\n\n"
+            "- **Режим:** качественная симуляция, не наблюдение за реальными людьми.\n"
+            "- **Точность метода:** R=0,72 (~90% теоретического потолка).\n"
+        )
+        # Проверяем ИСПОЛЬЗОВАНИЕ класса в разметке (`class="mode-badge badge-visual"`),
+        # а не голую подстроку "badge-visual" — та ВСЕГДА присутствует в статичном
+        # <style>-блоке (правило .badge-visual {...} печатается на каждый рендер
+        # независимо от контента), поэтому bare-подстрока ничего не различает.
+        badge_usage = 'class="mode-badge badge-visual"'
+        with tempfile.TemporaryDirectory() as td:
+            report_path = Path(td) / "report.md"
+            report_path.write_text(f"# Отчёт: demo\n\n{body}", encoding="utf-8")
+            html_image = rc.build_html(report_path, {"mode": "exploratory", "stimulus_kind": "image"})
+            self.assertIn(badge_usage, html_image)
+            self.assertIn("Визуальные стимулы", html_image)
+
+            html_text = rc.build_html(report_path, {"mode": "exploratory", "stimulus_kind": "text"})
+            self.assertNotIn(badge_usage, html_text)
+            self.assertNotIn("Визуальные стимулы", html_text)
+
+            html_no_manifest = rc.build_html(report_path, None)
+            self.assertNotIn(badge_usage, html_no_manifest)
+            self.assertNotIn("Визуальные стимулы", html_no_manifest)
+
+
 # ----------------------------------------------------------------------------
 # Жёсткое правило (б): целостность дисклеймеров
 # ----------------------------------------------------------------------------

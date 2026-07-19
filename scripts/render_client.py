@@ -165,6 +165,40 @@ def resolve_mode(manifest: Optional[dict]) -> ModeInfo:
     return ModeInfo(mode="exploratory", inferred=True)
 
 
+@dataclass
+class StimulusKindInfo:
+    kind: str  # "text" | "image" | "mixed" — фолбэк "text" для прогонов до v1.4/без поля
+    vision_failed: bool  # True — проба зрения (§1.2) провалена хотя бы для одного стимула
+    has_vision_check: bool  # True — manifest вообще нёс блок vision_check (study с образами)
+
+
+def resolve_stimulus_kind(manifest: Optional[dict]) -> StimulusKindInfo:
+    """
+    Клиентский двойник run_study.py::compute_stimulus_kind_line (spec_synthetic-
+    panel_v1.4.md §1.1/§1.4) — источник «визуальной пометки» шапки отчёта.
+    ИНТЕГРАЦИОННЫЙ ФИКС (F2, v1.4 DoD): report.md уже нёс строку «Стимулы: ...»
+    сразу под «Режим прогона» (report_template.md, {{STIMULUS_KIND_LINE}}), но
+    build_html её молча теряла — это ПРОСТОЙ (не bullet-list, не blockquote)
+    абзац преамбулы, а preamble_text/parse_header_meta/parse_header_note
+    забирают в HTML только заголовок/`- **label:**`-пункты/`>`-цитаты (см. их
+    докстринги) — любой другой текст преамбулы отбрасывается целиком. Как и
+    resolve_mode — читает готовое поле manifest.json, НЕ парсит текст report.md
+    (тот же приём, что уже используется для mode/controls_failed).
+    Терпимо к отсутствию поля: прогон без визуальных стимулов (подавляющее
+    большинство, включая ВСЕ прогоны до v1.4) получает kind="text" —
+    render_stimulus_kind_badge для этого случая возвращает "" (см. её
+    докстринг), рендер такого report.md не меняется НИКАК.
+    """
+    if manifest is None:
+        return StimulusKindInfo(kind="text", vision_failed=False, has_vision_check=False)
+    kind = _dig(manifest, "stimulus_kind")
+    if kind not in ("image", "mixed"):
+        kind = "text"
+    vision_check = manifest.get("vision_check")
+    vision_failed = bool(vision_check) and bool(vision_check.get("vision_failed"))
+    return StimulusKindInfo(kind=kind, vision_failed=vision_failed, has_vision_check=bool(vision_check))
+
+
 def resolve_controls_failed(manifest: Optional[dict]) -> bool:
     """
     Терпимо к нескольким вероятным путям схемы (см. докстринг модуля, "Известные
@@ -1002,6 +1036,25 @@ def render_mode_badge(mode_info: ModeInfo) -> str:
     return f'<span class="mode-badge {cls}">{label}</span>{note}'
 
 
+def render_stimulus_kind_badge(info: StimulusKindInfo) -> str:
+    """
+    HTML-двойник {{STIMULUS_KIND_LINE}} report_template.md (см.
+    resolve_stimulus_kind за контекстом фикса). "" для kind == "text" —
+    подавляющее большинство прогонов (включая ВСЕ до v1.4) не получают ни
+    новой разметки, ни пустого <p></p> в шапке. Формулировка статуса —
+    та же, что compute_stimulus_kind_line (run_study.py): не переформулировать,
+    чтобы markdown- и HTML-слой одного прогона не расходились в тексте.
+    """
+    if info.kind not in ("image", "mixed"):
+        return ""
+    kind_label = "🖼️ Визуальные стимулы" if info.kind == "image" else "📝🖼️ Смешанные стимулы"
+    if info.vision_failed:
+        cls, status = "badge-visual-warn", "проба зрения: НЕ пройдена"
+    else:
+        cls, status = "badge-visual", "проба зрения: пройдена"
+    return f'<span class="mode-badge {cls}">{kind_label}</span> <span class="badge-note">{status}</span>'
+
+
 def render_header_meta_box(header_meta: list[tuple[str, str]], manifest_extra: list[tuple[str, str]], intro_note: str) -> str:
     rows_src = header_meta or manifest_extra
     if not rows_src:
@@ -1077,6 +1130,8 @@ hr { border: none; border-top: 1px solid var(--border); margin: 1.6em 0; }
 }
 .badge-validated { background: #e4f3e8; color: var(--confident); border: 1px solid #bfe2c9; }
 .badge-exploratory { background: #eaf0f8; color: var(--accent); border: 1px solid #c9dcef; }
+.badge-visual { background: #f1ecf9; color: #5b3fa0; border: 1px solid #dccdf0; }
+.badge-visual-warn { background: #fbeaea; color: #a33636; border: 1px solid #eec7c7; }
 .badge-note { color: var(--muted); font-size: 0.85em; }
 
 .how-to-read {
@@ -1219,6 +1274,7 @@ def build_html(report_path: Path, manifest: Optional[dict]) -> str:
     intro_note = parse_header_note(preamble)
 
     mode_info = resolve_mode(manifest)
+    stimulus_kind_info = resolve_stimulus_kind(manifest)
     manifest_extra = manifest_meta(manifest)
 
     pmf_lookup = build_pmf_lookup_from_document(text)
@@ -1285,6 +1341,9 @@ def build_html(report_path: Path, manifest: Optional[dict]) -> str:
     parts.append('<header class="report-header">')
     parts.append(f"<h1>{inline_md_to_html(title)}</h1>")
     parts.append(f'<p class="report-subtitle">{render_mode_badge(mode_info)}</p>')
+    stimulus_kind_badge = render_stimulus_kind_badge(stimulus_kind_info)
+    if stimulus_kind_badge:
+        parts.append(f'<p class="report-subtitle">{stimulus_kind_badge}</p>')
     parts.append("</header>")
 
     parts.append(render_how_to_read_box())

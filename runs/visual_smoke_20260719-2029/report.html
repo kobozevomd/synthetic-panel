@@ -1,0 +1,310 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Отчёт: visual_smoke</title>
+<style>
+:root {
+  --bg: #fbfaf7;
+  --text: #20242c;
+  --muted: #5b6472;
+  --accent: #1f4e79;
+  --border: #dcdfe4;
+  --card-bg: #ffffff;
+  --confident: #1e7d34;
+  --borderline: #b8860b;
+  --noise: #78828e;
+  --disclaimer-bg: #fdf8ec;
+  --disclaimer-border: #e7d8a8;
+  --highlight-bg: #eef4fb;
+  --highlight-border: #c9dcef;
+}
+* { box-sizing: border-box; }
+html, body {
+  margin: 0; padding: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  font-size: 16px;
+  line-height: 1.6;
+}
+.page {
+  max-width: 880px;
+  margin: 0 auto;
+  padding: 32px 24px 64px;
+}
+h1, h2, h3, h4, .card-title, .passport-title, .how-to-read-title {
+  font-family: Georgia, "Times New Roman", serif;
+  color: var(--accent);
+  font-weight: 700;
+}
+h1 { font-size: 1.7em; margin: 0 0 6px; }
+h2 { font-size: 1.32em; margin: 2.2em 0 0.6em; border-bottom: 1px solid var(--border); padding-bottom: 0.3em; }
+h3.sub-heading { font-size: 1.1em; margin: 1.6em 0 0.5em; }
+h4.sub-heading, h5.sub-heading, h6.sub-heading { font-size: 1em; margin: 1.2em 0 0.4em; color: var(--text); }
+p { margin: 0.7em 0; }
+ul, ol { margin: 0.6em 0; padding-left: 1.4em; }
+li { margin: 0.25em 0; }
+code { background: #eef0f3; border-radius: 3px; padding: 0.1em 0.35em; font-size: 0.92em; }
+.ref-link code { background: #e6eaf0; }
+hr { border: none; border-top: 1px solid var(--border); margin: 1.6em 0; }
+
+.report-header { margin-bottom: 6px; }
+.report-subtitle { color: var(--muted); font-size: 0.95em; margin: 0 0 10px; }
+.mode-badge {
+  display: inline-block;
+  font-size: 0.82em;
+  font-weight: 600;
+  padding: 3px 11px;
+  border-radius: 999px;
+  letter-spacing: 0.01em;
+}
+.badge-validated { background: #e4f3e8; color: var(--confident); border: 1px solid #bfe2c9; }
+.badge-exploratory { background: #eaf0f8; color: var(--accent); border: 1px solid #c9dcef; }
+.badge-visual { background: #f1ecf9; color: #5b3fa0; border: 1px solid #dccdf0; }
+.badge-visual-warn { background: #fbeaea; color: #a33636; border: 1px solid #eec7c7; }
+.badge-note { color: var(--muted); font-size: 0.85em; }
+
+.how-to-read {
+  background: var(--highlight-bg);
+  border: 1px solid var(--highlight-border);
+  border-radius: 10px;
+  padding: 14px 20px;
+  margin: 18px 0 26px;
+}
+.how-to-read-title { margin: 0 0 6px; font-size: 1em; }
+.how-to-read ol { margin: 0; padding-left: 1.3em; }
+.how-to-read li { font-size: 0.95em; color: var(--text); margin: 0.35em 0; }
+
+.method-passport {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 14px 20px;
+  margin: 0 0 26px;
+}
+.passport-title { margin: 0 0 8px; font-size: 1em; }
+.meta-row { display: flex; gap: 10px; font-size: 0.93em; padding: 2px 0; }
+.meta-label { color: var(--muted); min-width: 190px; flex-shrink: 0; }
+.meta-value { color: var(--text); }
+.meta-note { color: var(--muted); font-size: 0.88em; margin-top: 8px; font-style: italic; }
+
+.highlights-box {
+  background: var(--highlight-bg);
+  border: 1px solid var(--highlight-border);
+  border-radius: 10px;
+  padding: 6px 22px 14px;
+  margin: 0 0 28px;
+}
+.highlights-box h2 { border-bottom: none; margin-top: 0.6em; }
+
+.recommendations-box {
+  background: #f2f7f0;
+  border: 1px solid #d3e6cd;
+  border-radius: 10px;
+  padding: 6px 22px 14px;
+  margin: 28px 0;
+}
+.recommendations-box h2 { border-bottom: none; margin-top: 0.6em; }
+
+.segment-card {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 16px 20px;
+  margin: 16px 0;
+}
+.card-title { font-size: 1.08em; margin: 0 0 2px; }
+.card-scale { color: var(--muted); font-size: 0.9em; margin-bottom: 10px; }
+.rank-rows { display: flex; flex-direction: column; gap: 8px; }
+.rank-row {
+  display: grid;
+  grid-template-columns: 26px 1fr auto 160px;
+  gap: 12px;
+  align-items: center;
+  padding: 6px 0;
+  border-top: 1px solid #eee;
+}
+.rank-row:first-child { border-top: none; }
+.rank-num { font-weight: 700; color: var(--muted); text-align: center; }
+.rank-label { font-size: 0.95em; }
+.e-hint { display: block; color: var(--muted); font-size: 0.82em; margin-top: 2px; }
+.rank-bar { white-space: nowrap; }
+.bar-missing { color: var(--muted); font-size: 0.82em; font-style: italic; }
+.rank-sep { display: flex; align-items: center; gap: 6px; font-size: 0.82em; color: var(--muted); white-space: normal; }
+.dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; display: inline-block; }
+.dot-confident { background: var(--confident); }
+.dot-borderline { background: var(--borderline); }
+.dot-noise { background: var(--noise); }
+.dot-unknown { background: #b8b8b8; }
+.dot-none { background: transparent; border: 1px solid #cfcfcf; }
+
+.pmf-svg .bar-track { fill: #eef0f3; }
+.pmf-svg .bar-fill { fill: var(--accent); }
+.pmf-svg .bar-label { font-size: 8px; fill: var(--muted); }
+
+blockquote.quote-card {
+  background: #f7f6f2;
+  border-left: 3px solid var(--accent);
+  margin: 0.8em 0;
+  padding: 0.5em 1em;
+  font-style: italic;
+  color: #33383f;
+}
+
+.table-wrap { overflow-x: auto; margin: 1em 0; }
+table.generic-table { border-collapse: collapse; width: 100%; font-size: 0.92em; }
+table.generic-table th, table.generic-table td {
+  border: 1px solid var(--border);
+  padding: 6px 10px;
+  text-align: left;
+  vertical-align: top;
+}
+table.generic-table th { background: #f2f3f5; font-weight: 700; }
+
+.appendix-note { color: var(--muted); font-size: 0.85em; font-style: italic; }
+
+details.appendix { margin: 28px 0; border: 1px solid var(--border); border-radius: 10px; padding: 4px 20px; background: var(--card-bg); }
+details.appendix > summary { cursor: pointer; font-weight: 700; color: var(--accent); padding: 10px 0; font-family: Georgia, serif; }
+
+.disclaimer-block {
+  background: var(--disclaimer-bg);
+  border: 1px solid var(--disclaimer-border);
+  border-radius: 10px;
+  padding: 6px 24px 18px;
+  margin: 32px 0 0;
+}
+.disclaimer-block h2, .disclaimer-block h3.sub-heading { border-bottom: none; }
+
+.page-footer { margin-top: 40px; color: var(--muted); font-size: 0.82em; text-align: center; }
+
+@media (max-width: 640px) {
+  .rank-row { grid-template-columns: 22px 1fr; grid-template-rows: auto auto; }
+  .rank-bar, .rank-sep { grid-column: 1 / -1; }
+  .meta-row { flex-direction: column; gap: 0; }
+  .meta-label { min-width: 0; }
+}
+
+@media print {
+  body { background: #fff; }
+  .page { max-width: 100%; padding: 0 8px; }
+  details.appendix { border: 1px solid #999; }
+  a { color: inherit; text-decoration: none; }
+}
+</style>
+</head>
+<body>
+<!-- ranking_cards_rendered: 2 -->
+<div class="page">
+<header class="report-header">
+<h1>Отчёт: visual_smoke</h1>
+<p class="report-subtitle"><span class="mode-badge badge-exploratory">Разведочный режим</span></p>
+<p class="report-subtitle"><span class="mode-badge badge-visual">🖼️ Визуальные стимулы</span> <span class="badge-note">проба зрения: пройдена</span></p>
+</header>
+<aside class="how-to-read"><p class="how-to-read-title">Как читать этот отчёт</p><ol><li>Читайте цифры и цвета ниже как сравнение вариантов между собой в этом прогоне, а не как процент реальных покупателей — сила метода в относительном порядке, а не в абсолютных числах.</li><li>Светофор показывает надёжность разницы (устойчива ли она при повторной проверке), а не её размер: серый цвет не значит «плохой результат», только «разница пока в пределах шума метода».</li><li>Полные ограничения метода — раздел «Границы этого отчёта» в конце документа; не читайте цифры выше в отрыве от него.</li></ol></aside>
+<section class="method-passport"><p class="passport-title">Паспорт методологии</p><p>Мнение смоделировано для 2 сегмент(а/ов) аудитории (Приверженцы натуральных средств, скептики к химии в составе, Хронические разочарованные — перепробовали всё) — по 4 смоделированных профилей на сегмент, каждый профиль отвечал в 2 независимых генераци(и/ях) (8 профилей × 3 стимул(а/ов) × 2 = 80 смоделированных реакций всего). Шкала — Готовность купить (purchase_intent).</p>
+<p>Метод элиситации — Semantic Similarity Rating (SSR): персона отвечает свободным текстом (не числом), оценка получается через сравнение этого текста с якорными фразами шкалы — число никогда не запрашивается напрямую (полностью, с обоснованием — <code>references/methodology.md</code>, §1, Слой B).</p>
+<p>Самоконтроль прогона: плацебо и ловушка на своих местах — самоконтроль пройден.</p>
+<p><strong>Проба зрения:</strong> пройдена — ключевые элементы всех вариантов распознаны — до того как персоны начали реагировать, модель без роли персоны описала каждое изображение (что видит: продукт, текст на макете, ключевые элементы) и сверила описание с ключевым различающим элементом варианта (<code>key_element</code>, study.yaml), если он был задан; полный разбор по каждому варианту — <code class="ref-path">00_vision_check.md</code>. Это проверка «панель тестировала макет, а не собственную галлюцинацию о нём», не оценка дизайна.</p>
+<p>Полный технический паспорт (dated ID модели, версия эмбеддинга и якорей, конфигурация бутстрепа, manifest целиком) — раздел «Приложение» в конце документа; посчитанные E[шкала]/доверительные интервалы/полные PMF — там же.</p>
+<hr/></section>
+<p class="meta-note">Это отчёт синтетической ИИ-панели (persona-режим SSR) — не наблюдение за реальными людьми. Секция «Главное» ниже — 3–5 выводов-решений; полный технический паспорт, посчитанные цифры (E/CI/PMF) и несъёмные ограничения метода — в конце документа («Границы этого отчёта», «Приложение»). Не использовать выводы этого отчёта в отрыве от них.</p>
+<section class="highlights-box"><h2>Главное</h2><ol><li><strong>Для «натуральников» hero-заявление стоит формулировать как проверяемый факт состава, а не как общее слово об эффекте.</strong> Именно это, а не оформление само по себе, вывело макет A («без сульфатов») в лидеры этого сегмента — см. разбор A в разделе 2.</li><li><strong>Яркий, «обещающий» регистр (макет B) — риск для обеих проверенных аудиторий одновременно, не одной.</strong> Он стал аутсайдером и у «натуральников», и у «хронических разочарованных» по независимым, разным причинам — прежде чем использовать такой регистр в реальной коммуникации, стоит проверить его отдельно, не полагаясь на то, что он сработает хотя бы на одном сегменте.</li><li><strong>Для «хронических разочарованных» фактическая подача без превосходных степеней (макет C) не просто нейтральна — она напрямую повышает готовность купить.</strong> Это прямое попадание в их установку «хочу честного разговора», а не вежливое согласие — разбор C в разделе 2.</li><li><strong>Один и тот же клинический регистр работает по-разному в двух сегментах.</strong> У «ветеранов» это чистый плюс, у «натуральников» — смешанная реакция (доверие к цифрам против ощущения «аптеки»/химии): при выборе единого key visual для обеих аудиторий сразу этот компромисс стоит знать заранее, а не обнаруживать постфактум на реальных потребителях.</li></ol>
+<hr/></section>
+<h2>1. Рейтинг стимулов по сегментам</h2><p>Для каждого сегмента исследования — стимулы в порядке убывания E[шкала] (само значение — в приложении; здесь важен только порядок). Разделимость считается через парный бутстреп на ОДИНАКОВЫХ профилях: P(A&gt;B) — вероятность, что стимул на месте выше действительно сильнее следующего по рангу, а не просто оказался выше из-за шума метода. Три ярлыка (клиентский слой; полные числа P(A&gt;B) — в приложении):</p>
+<ul><li><strong>уверенный разрыв</strong> — P(A&gt;B) ≥ 0,9: разница между этими двумя стимулами устойчива, можно опираться при выборе.</li><li><strong>на грани</strong> — 0,7 ≤ P(A&gt;B) &lt; 0,9: разница, скорее всего, есть, но не настолько уверенно, чтобы принимать решение только на ней — стоит смотреть на качественный разбор ниже или перепроверить на большей выборке.</li><li><strong>в пределах шума</strong> — P(A&gt;B) &lt; 0,7: порядок между ЭТИМИ двумя стимулами конкретно не считать надёжным (но это не отменяет надёжность их совместного отрыва от третьего стимула, если такой есть, — см. пример инверсии в <code>Инструкция_синтетическая_панель.md</code>, §6).</li></ul>
+<h4 class="sub-heading">Сегмент: Приверженцы натуральных средств, скептики к химии в составе</h4>
+<div class="segment-card">
+  <div class="card-title">Приверженцы натуральных средств, скептики к химии в составе</div>
+  <div class="card-scale">Шкала: Готовность купить (purchase_intent)</div>
+  <div class="rank-rows"><div class="rank-row">
+  <div class="rank-num">1</div>
+  <div class="rank-label">A: Минималистичный светлый — «Без сульфатов»</div>
+  <div class="rank-bar"><svg viewBox="0 0 168 73" width="168" height="73" role="img" aria-label="Распределение ответов по шкале от 1 до 5" class="pmf-svg"><text x="0" y="9.4" class="bar-label">1</text><rect x="14" y="0" width="152" height="10" class="bar-track"/><rect x="14" y="0" width="43.4" height="10" class="bar-fill"/><text x="0" y="24.4" class="bar-label">2</text><rect x="14" y="15" width="152" height="10" class="bar-track"/><rect x="14" y="15" width="108.6" height="10" class="bar-fill"/><text x="0" y="39.4" class="bar-label">3</text><rect x="14" y="30" width="152" height="10" class="bar-track"/><rect x="14" y="30" width="65.1" height="10" class="bar-fill"/><text x="0" y="54.4" class="bar-label">4</text><rect x="14" y="45" width="152" height="10" class="bar-track"/><rect x="14" y="45" width="152.0" height="10" class="bar-fill"/><text x="0" y="69.4" class="bar-label">5</text><rect x="14" y="60" width="152" height="10" class="bar-track"/><rect x="14" y="60" width="65.1" height="10" class="bar-fill"/></svg></div>
+  <div class="rank-sep"><span class="dot dot-confident" aria-hidden="true"></span>уверенный разрыв (Топ-3 воспроизведён в 2 из 2 проверок устойчивости.)</div>
+</div><div class="rank-row">
+  <div class="rank-num">2</div>
+  <div class="rank-label">C: Аптечный строгий — «Клинически протестировано»</div>
+  <div class="rank-bar"><svg viewBox="0 0 168 73" width="168" height="73" role="img" aria-label="Распределение ответов по шкале от 1 до 5" class="pmf-svg"><text x="0" y="9.4" class="bar-label">1</text><rect x="14" y="0" width="152" height="10" class="bar-track"/><rect x="14" y="0" width="43.4" height="10" class="bar-fill"/><text x="0" y="24.4" class="bar-label">2</text><rect x="14" y="15" width="152" height="10" class="bar-track"/><rect x="14" y="15" width="130.3" height="10" class="bar-fill"/><text x="0" y="39.4" class="bar-label">3</text><rect x="14" y="30" width="152" height="10" class="bar-track"/><rect x="14" y="30" width="86.9" height="10" class="bar-fill"/><text x="0" y="54.4" class="bar-label">4</text><rect x="14" y="45" width="152" height="10" class="bar-track"/><rect x="14" y="45" width="152.0" height="10" class="bar-fill"/><text x="0" y="69.4" class="bar-label">5</text><rect x="14" y="60" width="152" height="10" class="bar-track"/><rect x="14" y="60" width="21.7" height="10" class="bar-fill"/></svg></div>
+  <div class="rank-sep"><span class="dot dot-confident" aria-hidden="true"></span>уверенный разрыв (Топ-3 воспроизведён в 2 из 2 проверок устойчивости.)</div>
+</div><div class="rank-row">
+  <div class="rank-num">3</div>
+  <div class="rank-label">B: Яркий насыщенный — «Двойной объём»</div>
+  <div class="rank-bar"><svg viewBox="0 0 168 73" width="168" height="73" role="img" aria-label="Распределение ответов по шкале от 1 до 5" class="pmf-svg"><text x="0" y="9.4" class="bar-label">1</text><rect x="14" y="0" width="152" height="10" class="bar-track"/><rect x="14" y="0" width="108.6" height="10" class="bar-fill"/><text x="0" y="24.4" class="bar-label">2</text><rect x="14" y="15" width="152" height="10" class="bar-track"/><rect x="14" y="15" width="152.0" height="10" class="bar-fill"/><text x="0" y="39.4" class="bar-label">3</text><rect x="14" y="30" width="152" height="10" class="bar-track"/><rect x="14" y="30" width="21.7" height="10" class="bar-fill"/><text x="0" y="54.4" class="bar-label">4</text><rect x="14" y="45" width="152" height="10" class="bar-track"/><rect x="14" y="45" width="43.4" height="10" class="bar-fill"/><text x="0" y="69.4" class="bar-label">5</text><rect x="14" y="60" width="152" height="10" class="bar-track"/><rect x="14" y="60" width="21.7" height="10" class="bar-fill"/></svg></div>
+  <div class="rank-sep"><span class="dot dot-none" aria-hidden="true"></span>— (Топ-3 воспроизведён в 2 из 2 проверок устойчивости.)</div>
+</div></div>
+</div>
+<p>Внутрипрогонная устойчивость сэмплов: у 2 из 4 профилей сегмента разные сэмплы одного стимула дали разных «условных победителей» при сравнении с соседом по рангу — сегмент внутренне неоднороден в реакции на эти стимулы, это не ошибка данных.</p>
+<hr/>
+<h4 class="sub-heading">Сегмент: Хронические разочарованные — перепробовали всё</h4>
+<div class="segment-card">
+  <div class="card-title">Хронические разочарованные — перепробовали всё</div>
+  <div class="card-scale">Шкала: Готовность купить (purchase_intent)</div>
+  <div class="rank-rows"><div class="rank-row">
+  <div class="rank-num">1</div>
+  <div class="rank-label">C: Аптечный строгий — «Клинически протестировано»</div>
+  <div class="rank-bar"><svg viewBox="0 0 168 73" width="168" height="73" role="img" aria-label="Распределение ответов по шкале от 1 до 5" class="pmf-svg"><text x="0" y="9.4" class="bar-label">1</text><rect x="14" y="0" width="152" height="10" class="bar-track"/><rect x="14" y="0" width="43.4" height="10" class="bar-fill"/><text x="0" y="24.4" class="bar-label">2</text><rect x="14" y="15" width="152" height="10" class="bar-track"/><rect x="14" y="15" width="108.6" height="10" class="bar-fill"/><text x="0" y="39.4" class="bar-label">3</text><rect x="14" y="30" width="152" height="10" class="bar-track"/><rect x="14" y="30" width="65.1" height="10" class="bar-fill"/><text x="0" y="54.4" class="bar-label">4</text><rect x="14" y="45" width="152" height="10" class="bar-track"/><rect x="14" y="45" width="152.0" height="10" class="bar-fill"/><text x="0" y="69.4" class="bar-label">5</text><rect x="14" y="60" width="152" height="10" class="bar-track"/><rect x="14" y="60" width="65.1" height="10" class="bar-fill"/></svg></div>
+  <div class="rank-sep"><span class="dot dot-confident" aria-hidden="true"></span>уверенный разрыв (Топ-3 воспроизведён в 2 из 2 проверок устойчивости.)</div>
+</div><div class="rank-row">
+  <div class="rank-num">2</div>
+  <div class="rank-label">A: Минималистичный светлый — «Без сульфатов»</div>
+  <div class="rank-bar"><svg viewBox="0 0 168 73" width="168" height="73" role="img" aria-label="Распределение ответов по шкале от 1 до 5" class="pmf-svg"><text x="0" y="9.4" class="bar-label">1</text><rect x="14" y="0" width="152" height="10" class="bar-track"/><rect x="14" y="0" width="108.6" height="10" class="bar-fill"/><text x="0" y="24.4" class="bar-label">2</text><rect x="14" y="15" width="152" height="10" class="bar-track"/><rect x="14" y="15" width="152.0" height="10" class="bar-fill"/><text x="0" y="39.4" class="bar-label">3</text><rect x="14" y="30" width="152" height="10" class="bar-track"/><rect x="14" y="30" width="65.1" height="10" class="bar-fill"/><text x="0" y="54.4" class="bar-label">4</text><rect x="14" y="45" width="152" height="10" class="bar-track"/><rect x="14" y="45" width="86.9" height="10" class="bar-fill"/><text x="0" y="69.4" class="bar-label">5</text><rect x="14" y="60" width="152" height="10" class="bar-track"/><rect x="14" y="60" width="21.7" height="10" class="bar-fill"/></svg></div>
+  <div class="rank-sep"><span class="dot dot-confident" aria-hidden="true"></span>уверенный разрыв (Топ-3 воспроизведён в 2 из 2 проверок устойчивости.)</div>
+</div><div class="rank-row">
+  <div class="rank-num">3</div>
+  <div class="rank-label">B: Яркий насыщенный — «Двойной объём»</div>
+  <div class="rank-bar"><svg viewBox="0 0 168 73" width="168" height="73" role="img" aria-label="Распределение ответов по шкале от 1 до 5" class="pmf-svg"><text x="0" y="9.4" class="bar-label">1</text><rect x="14" y="0" width="152" height="10" class="bar-track"/><rect x="14" y="0" width="130.3" height="10" class="bar-fill"/><text x="0" y="24.4" class="bar-label">2</text><rect x="14" y="15" width="152" height="10" class="bar-track"/><rect x="14" y="15" width="152.0" height="10" class="bar-fill"/><text x="0" y="39.4" class="bar-label">3</text><rect x="14" y="30" width="152" height="10" class="bar-track"/><rect x="14" y="30" width="21.7" height="10" class="bar-fill"/><text x="0" y="54.4" class="bar-label">4</text><rect x="14" y="45" width="152" height="10" class="bar-track"/><rect x="14" y="45" width="43.4" height="10" class="bar-fill"/><text x="0" y="69.4" class="bar-label">5</text><rect x="14" y="60" width="152" height="10" class="bar-track"/><rect x="14" y="60" width="21.7" height="10" class="bar-fill"/></svg></div>
+  <div class="rank-sep"><span class="dot dot-none" aria-hidden="true"></span>— (Топ-3 воспроизведён в 2 из 2 проверок устойчивости.)</div>
+</div></div>
+</div>
+<p>Внутрипрогонная устойчивость сэмплов: расхождений победителя между сэмплами одного профиля не обнаружено.</p>
+<hr/>
+<h2>2. Качественный разбор</h2><h4 class="sub-heading">A: Минималистичный светлый — «Без сульфатов»</h4>
+<p><strong>Сегмент «Приверженцы натуральных средств, скептики к химии в составе».</strong> Драйверы: заявление читается как проверяемый факт состава, а не как общее слово о «природности» — сегмент прямо отмечает разницу между «без сульфатов» (конкретно, проверяемо) и расплывчатыми обещаниями. Сдержанное оформление (кремовый фон, тонкая антиква, один графический элемент — контурный лист) само по себе читается как более честное, чем яркая упаковка. Барьеры: доверие к самому заявлению не отменяет привычки сегмента проверять полный состав перед покупкой — ни один профиль не согласился купить «просто по одной фразе на этикетке».</p>
+<blockquote class="quote-card">«Мне нравится, что здесь не пытаются продать красивыми словами про «природу», а прямо пишут «без сульфатов» крупными буквами — это то, что реально можно проверить.» <em>(смоделированная реакция, naturalniki_bez_khimii)</em></blockquote>
+<blockquote class="quote-card">«Готова подождать эффекта подольше, лишь бы состав был действительно чистый, как заявлено, но сначала проверю полный список компонентов.» <em>(смоделированная реакция, naturalniki_bez_khimii)</em></blockquote>
+<p><strong>Сегмент «Хронические разочарованные — перепробовали всё».</strong> Драйверы: скромный, лишённый пафоса тон — прямая противоположность тем «наконец-то решениям», от которых сегмент устал, и это самими профилями называется плюсом. Барьеры: заявление отвечает не на тот вопрос, который волнует сегмент больше всего — про сам факт выпадения волос макет не говорит ни слова, только про мягкость состава, поэтому продукт понижается в статусе «обычный шампунь», а не «решение проблемы».</p>
+<blockquote class="quote-card">«Хотя бы не обещает чудес — просто «без сульфатов», спокойно, без надрыва, это уже плюс после стольких «наконец-то решений», которые я видел.» <em>(смоделированная реакция, razocharovannye_veterany)</em></blockquote>
+<blockquote class="quote-card">«Устал верить в чудо, но иногда всё равно проверяю новое — здесь хотя бы не обещают чудо, только мягкий состав без сульфатов. […] Из минусов — ни слова о выпадении волос, том, ради чего я вообще смотрю такие продукты.» <em>(смоделированная реакция, razocharovannye_veterany)</em></blockquote>
+<h4 class="sub-heading">B: Яркий насыщенный — «Двойной объём»</h4>
+<p><strong>Сегмент «Приверженцы натуральных средств, скептики к химии в составе».</strong> Драйверов не обнаружено. Барьеры: насыщенная розово-оранжевая палитра, бейдж «×2» и упоминание коллагена без пояснений считываются сегментом как типичный код масс-маркетового средства на силиконах — несколько профилей прямо говорят, что не стали бы даже читать состав, отказ происходит на уровне упаковки, до содержания.</p>
+<blockquote class="quote-card">«"Двойной объём" да ещё "формула с коллагеном" — подозреваю силиконы, которые просто обволакивают волос и создают временный эффект объёма, а не уход.» <em>(смоделированная реакция, naturalniki_bez_khimii)</em></blockquote>
+<blockquote class="quote-card">«Слишком нарядно для честного продукта, на мой взгляд — розово-оранжевый градиент и бейдж "×2" выглядят как обычный масс-маркет. […] даже не стала бы читать состав.» <em>(смоделированная реакция, naturalniki_bez_khimii)</em></blockquote>
+<p><strong>Сегмент «Хронические разочарованные — перепробовали всё».</strong> Драйверов не обнаружено. Барьеры: ровно тот регистр, от которого сегмент максимально устал — громкое числовое обещание («×2») без единого объяснения механизма, прямо ассоциируется профилями с прошлым опытом разочарований в категории. Это единственный стимул, который ни один профиль ни в одном из двух сегментов не назвал привлекательным.</p>
+<blockquote class="quote-card">«Вот это ровно то, что я уже видел сто раз — яркая упаковка, бейдж "×2", громкое обещание объёма. За долгие годы перепробовал много такого, эффект обычно временный и визуальный, а не про рост волос.» <em>(смоделированная реакция, razocharovannye_veterany)</em></blockquote>
+<blockquote class="quote-card">«Устал верить в чудо — и это тот самый случай: кричащий дизайн, "×2", никаких честных ограничений.» <em>(смоделированная реакция, razocharovannye_veterany)</em></blockquote>
+<h4 class="sub-heading">C: Аптечный строгий — «Клинически протестировано»</h4>
+<p><strong>Сегмент «Приверженцы натуральных средств, скептики к химии в составе».</strong> Драйверы: конкретные, проверяемые цифры (n=104, подтверждённая гипоаллергенность) неожиданно читаются сегментом как БОЛЕЕ честные, чем расплывчатые слова о «натуральности» без подтверждения — реакция смешанная, не отказ. Барьеры: клинический, «аптечный» визуальный регистр (тёмно-синий, печать, таблица показателей) ассоциируется с лабораторной химией, а не с натуральным уходом, который сегмент ищет в первую очередь — доверие к цифрам не снимает эстетический диссонанс.</p>
+<blockquote class="quote-card">«Плюс в том, что здесь не прячутся за красивыми словами — указано конкретное число участников исследования и что переносимость проверена, это честнее, чем просто "натурально". Минус — сам стиль слишком клинический, холодный, ощущение фармпрепарата, а не бережного ухода.» <em>(смоделированная реакция, naturalniki_bez_khimii)</em></blockquote>
+<blockquote class="quote-card">«Нравится, что не стесняются написать конкретные цифры — n=104, гипоаллергенность — это редкость и внушает доверие больше, чем расплывчатая "натуральность" без подтверждения.» <em>(смоделированная реакция, naturalniki_bez_khimii)</em></blockquote>
+<p><strong>Сегмент «Хронические разочарованные — перепробовали всё».</strong> Драйверы: этот макет — единственный из трёх, который прямо совпадает с базовой установкой сегмента «хочу честного разговора»: конкретное число участников исследования, независимая лаборатория, явно названные (не спрятанные) условия — и, в отличие от A и B, ни одного упоминания превосходных степеней. Барьеры: не обнаружено — это единственная пара стимул×сегмент всей качественной секции без единого барьера в ответах профилей.</p>
+<blockquote class="quote-card">«Вот это уже больше похоже на честный разговор — конкретное число участников исследования, независимая лаборатория, никаких "наконец-то" и превосходных степеней.» <em>(смоделированная реакция, razocharovannye_veterany)</em></blockquote>
+<blockquote class="quote-card">«Наконец подача без превосходных степеней — просто факты: сколько человек участвовало, что подтверждено дерматологами. Ограничения метода не спрятаны, это редкость для категории.» <em>(смоделированная реакция, razocharovannye_veterany)</em></blockquote>
+<hr/>
+<section class="recommendations-box"><h2>Что с этим делать</h2><ol><li>Прежде чем утверждать единый key visual для более широкой аудитории — прогнать тот же набор из 3 макетов на оставшихся сегментах панели <code>hairloss_demo</code> (в этом смоук-тесте участвовали только 2 из 8): реакция на регистр «клинически протестировано» разошлась даже между двумя проверенными сегментами, для остальных шести она пока не измерена.</li><li>Регистр макета B (яркая палитра + необъяснённое числовое обещание «×2») не запускать в реальную коммуникацию без отдельной проверки — это единственный из трёх стимулов, не получивший ни одного драйвера ни в одном из двух сегментов; риск системный (обе аудитории независимо считали его наименее убедительным), а не случайность выборки.</li><li>Для коммуникации, ориентированной на аудиторию, близкую к «хроническим разочарованным» — рассмотреть фактический, свободный от превосходных степеней тон (конкретные цифры, явно названные ограничения) не только на упаковке, но и в остальных материалах: реакция на этот регистр была самой выраженной положительной во всей качественной секции.</li><li><strong>Следующий human-тест перед любым дорогим решением по упаковке.</strong> Всё выше — относительный порядок и качественная интерпретация синтетической ИИ-панели, не наблюдение за реальными людьми (см. «Границы этого отчёта»). Метод сознательно не оценивал два смежных вопроса — эстетическое предпочтение (какой макет красивее — вкус модели не равен вкусу сегмента) и физиологию зрительного восприятия дизайна в реальных условиях покупки (структурно вне метода — измеряется только специализированными eye-tracking/attention-инструментами, например Dragonfly/Neurons, а не смоделированными профилями). Логичный следующий шаг — количественный или качественный тест упаковки с реальными респондентами целевых сегментов (hall-test/CLT либо онлайн-тест упаковки), который закроет именно эти два пробела, а не повторит то, что уже измерено здесь.</li></ol>
+<hr/></section>
+<details class="appendix"><summary>Приложение: технические таблицы (E[шкала], CI, PMF)</summary><div><h3>Приложение</h3><h4 class="sub-heading">Технический паспорт прогона</h4>
+<ul><li><strong>Тип исследования:</strong> claims_ranking</li><li><strong>Дата прогона:</strong> 2026-07-19T17:32:23.649524+00:00</li><li><strong>Режим генерации:</strong> agent</li><li><strong>Модель:</strong> claude-sonnet-5 (самодекларация модели-агента, self_reported=true)</li><li><strong>Эмбеддинг-модель (SSR):</strong> ai-forever/ru-en-RoSBERTa</li><li><strong>Версия якорей:</strong> 2</li><li><strong>N:</strong> 8 смоделированных профилей (2 сегмент(а/ов) × 4/сегмент) × 3 стимул(а/ов) × 2 независимых генераций = 80 смоделированных реакций</li><li><strong>Тип стимулов:</strong> image</li><li><strong>Самоконтроль (плацебо/ловушка):</strong> плацебо и ловушка на своих местах — самоконтроль пройден</li><li><strong>Проба зрения (визуальные стимулы):</strong> пройдена — ключевые элементы всех вариантов распознаны</li><li><strong>Manifest:</strong> <code class="ref-path">manifest.json</code></li></ul>
+<h4 class="sub-heading">Полная статистика по сегментам (E[шкала], 95% CI, PMF)</h4>
+<p>Для тех, кому нужны сырые цифры для собственного анализа. Разделимость здесь дана И трёхуровневым ярлыком (как в разделе 1), И полными числами P(A&gt;B) — следующая таблица не заменяет раздел 1, а раскрывает его.</p>
+<h5 class="sub-heading">Сегмент: Приверженцы натуральных средств, скептики к химии в составе</h5>
+<div class="table-wrap"><table class="generic-table"><thead><tr><th>Место</th><th>Стимул</th><th>E[шкала]</th><th>95% CI</th><th>PMF (1→5)</th><th>P(A&gt;B) от следующего</th><th>Ярлык</th></tr></thead><tbody><tr><td>1</td><td>A: Минималистичный светлый — «Без сульфатов»</td><td>3.08</td><td>[2.87, 3.26]</td><td>▃▆▄█▄</td><td>0.98</td><td>уверенный разрыв</td></tr><tr><td>2</td><td>C: Аптечный строгий — «Клинически протестировано»</td><td>2.87</td><td>[2.61, 3.13]</td><td>▃▇▅█▂</td><td>1.00</td><td>уверенный разрыв</td></tr><tr><td>3</td><td>B: Яркий насыщенный — «Двойной объём»</td><td>2.28</td><td>[2.10, 2.44]</td><td>▆█▂▃▂</td><td>—</td><td>—</td></tr></tbody></table></div>
+<hr/>
+<h5 class="sub-heading">Сегмент: Хронические разочарованные — перепробовали всё</h5>
+<div class="table-wrap"><table class="generic-table"><thead><tr><th>Место</th><th>Стимул</th><th>E[шкала]</th><th>95% CI</th><th>PMF (1→5)</th><th>P(A&gt;B) от следующего</th><th>Ярлык</th></tr></thead><tbody><tr><td>1</td><td>C: Аптечный строгий — «Клинически протестировано»</td><td>3.15</td><td>[3.03, 3.32]</td><td>▃▆▄█▄</td><td>1.00</td><td>уверенный разрыв</td></tr><tr><td>2</td><td>A: Минималистичный светлый — «Без сульфатов»</td><td>2.40</td><td>[2.36, 2.44]</td><td>▆█▄▅▂</td><td>1.00</td><td>уверенный разрыв</td></tr><tr><td>3</td><td>B: Яркий насыщенный — «Двойной объём»</td><td>2.18</td><td>[2.07, 2.37]</td><td>▇█▂▃▂</td><td>—</td><td>—</td></tr></tbody></table></div>
+<hr/>
+<p><strong>Проба зрения — детализация по стимулам (§1.2, пройдена):</strong></p>
+<div class="table-wrap"><table class="generic-table"><thead><tr><th>Изображение</th><th>Стимулы</th><th>Описание (модель БЕЗ роли персоны)</th><th>Вердикт</th></tr></thead><tbody><tr><td>demo_a_minimalist_sulfate_free.png</td><td>A</td><td>Флакон шампуня на светлом кремовом/бежевом фоне, минималистичный дизайн. Матовый флакон б…</td><td>A: OK</td></tr><tr><td>demo_b_bright_double_volume.png</td><td>B</td><td>Флакон на ярком фоне с диагональным градиентом от малиново-розового (вверху) к оранжевому…</td><td>B: OK</td></tr><tr><td>demo_c_clinical_tested.png</td><td>C</td><td>Флакон на чисто белом фоне, строгий, «аптечный»/клинический стиль. Сверху и снизу всего и…</td><td>C: OK</td></tr></tbody></table></div>
+<hr/>
+<p><strong>Детализация самоконтроля (§1.4, пройден):</strong> Плацебо этого прогона — kind=«irrelevant» (§2.2 v1.4, контрастные плацебо).</p>
+<ul><li>naturalniki_bez_khimii: плацебо — ранг 5/5 (OK); пара-ловушка (косметическая копия стимула «B») — в пределах шума (OK).</li><li>razocharovannye_veterany: плацебо — ранг 5/5 (OK); пара-ловушка (косметическая копия стимула «B») — в пределах шума (OK).</li></ul>
+<p>Пример <code>▁▂▇▄▁</code> (не обязателен побуквенно — семантика важнее символа): компактная визуализация PMF по 5 точкам, например <code>▁▂▇▄▁</code> или построчно <code>1:██░░░░░░░░ 2:████░░░░░░ 3:██████░░░░ 4:████░░░░░░ 5:██░░░░░░░░</code> — доля закрашенных символов пропорциональна P(i), округление на усмотрение report.py.</p>
+<h4 class="sub-heading">Методология расчёта разделимости</h4>
+<p>Парный бутстреп разностей на ОДИНАКОВЫХ профилях (ресэмпл профилей, не независимые доверительные интервалы двух стимулов по отдельности) — <code>config.yaml: report.bootstrap_iters/seed/ci</code>. P(A&gt;B) — доля бутстреп-сэмплов, где стимул A действительно превзошёл B на тех же ресэмплированных профилях; это устойчивее, чем проверка пересечения independent CI (см. <code>references/methodology.md</code> за обоснованием). Пороги ярлыков секции 1 и этой таблицы — 0,9 и 0,7 по P(A&gt;B), см. раздел 1 выше.</p></div></details>
+<section class="disclaimer-block"><h2>Границы этого отчёта</h2><h3 class="sub-heading">Границы этого отчёта</h3><ul><li><strong>Режим:</strong> данные получены в persona-режиме синтетической ИИ-панели — это качественная симуляция реакции сегмента, а не наблюдение за реальными людьми и не замена количественному исследованию с реальными респондентами.</li><li><strong>Что надёжно:</strong> относительный порядок и сравнение стимулов — какой клейм или концепт сильнее другого, в каком сегменте разрыв между стимулами больше. Это сильная сторона метода.</li><li><strong>Что не надёжно:</strong> абсолютные значения — доли в процентах, ожидаемые объёмы или частоты потребления, прогноз конверсии в реальные продажи. Эти показатели в отчёте не публикуются и не должны домысливаться из E[шкала] или PMF ниже.</li><li><strong>Точность метода:</strong> элиситация ответов через Semantic Similarity Rating (SSR) на валидационном наборе из 57 исследований показывает <strong>R=0,72 (~90% теоретического потолка)</strong>. Потолок — это шум тест-ретест повторяемости у самих людей-респондентов (один и тот же человек не отвечает идентично при повторном опросе), а не «корреляция с реальностью» напрямую. Это не означает «90% точности» в разговорном смысле слова. Важно: эта цифра получена на ОРИГИНАЛЬНОЙ англоязычной конфигурации метода — наша русская реализация проходит собственный контроль согласованности шкалы (монотонность якорей, rank-recovery) до собственного человеческого бенчмарка (подробнее — <code>references/methodology.md</code>, §3.1.1).</li><li><strong>Природа ответа:</strong> по формулировке профессиональной ассоциации AAPOR (Task Force on Responsible AI Integration in Survey Research, 2026), ответ ИИ-агента — это «модельное приближение того, что мог бы сказать человек, а не прямое наблюдение человеческого высказывания»; в лучшем случае синтетические ответы работают как прокси, в худшем — могут систематически искажать представление о симулируемой популяции.</li><li><strong>Что не оценивалось этим отчётом:</strong> сенсорные характеристики (вкус, аромат, текстура — у модели нет физиологического восприятия), медиамикс, Brand Lift, прогноз продаж (требуют реальных данных об экспозиции и транзакциях), частоты и объёмы потребления в абсолютных величинах.</li><li><strong>Маркировка:</strong> это вывод синтетической ИИ-панели. Данные не должны использоваться или преподноситься как данные реальных респондентов ни во внутренних, ни во внешних материалах.</li><li><strong>Прогон:</strong> модель — claude-sonnet-5 (самодекларация модели-агента, self_reported=true), версия эмбеддинг-модели — ai-forever/ru-en-RoSBERTa, дата — 2026-07-19T17:32:23.649524+00:00 (полный manifest — manifest.json). LLM-провайдеры обновляют модели без предупреждения; результат воспроизводимого повторного прогона на новой версии модели не гарантирован — при интерпретации результатов через недели/месяцы стоит планировать повторный прогон, а не считать этот отчёт вечным (см. <code>references/methodology.md</code>, §3.4).</li></ul>
+<hr/></section>
+<footer class="page-footer">Синтетическая ИИ-панель — вывод модельного приближения, не наблюдение за реальными людьми. Клиентский HTML сгенерирован автоматически из report.md/cjm_report.md (scripts/render_client.py) без изменения посчитанных цифр.</footer>
+</div>
+</body>
+</html>
