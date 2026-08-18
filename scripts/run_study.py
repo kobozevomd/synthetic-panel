@@ -109,6 +109,7 @@ if str(_SCRIPTS_DIR) not in sys.path:
 import generate  # noqa: E402
 import durable_execution  # noqa: E402
 import report  # noqa: E402
+import controls_gate  # noqa: E402
 import ssr_core  # noqa: E402
 
 try:  # pillow — опционально: нужен только для проверки непараллельности (§1.1 v1.4)
@@ -254,6 +255,8 @@ CONTROLS_OFF_TOKENS = {"off", "false", "no", "0", "disabled", "нет", "вык�
 
 PLACEBO_REAL_ID = "__placebo__"
 DECOY_REAL_ID = "__decoy__"
+CONTROLS_GATE_VERSION = controls_gate.GATE_VERSION
+DECOY_CONSTRUCTION_VERSION = "period-toggle-v2"
 
 
 def controls_requested(study: dict) -> bool:
@@ -305,12 +308,10 @@ def pick_placebo(bank: list[dict], seed: int, study_name: str) -> dict:
 
 def make_decoy_text(original_text: str, rng) -> str:
     """
-    Косметическая правка текста стимула для пары-ловушки (§1.4): смысл НЕ меняется
-    (правка чисто типографская — пунктуация/кавычки), но текст гарантированно не
-    байт-в-байт идентичен оригиналу (иначе в agent-режиме, где один агент видит
-    ВЕСЬ responses_todo.jsonl разом, дубликат было бы слишком легко механически
-    заметить — см. ограничение ниже). Выбор варианта детерминирован от `rng`
-    (передаётся вызывающим кодом — build_controls_manifest — уже с нужным seed).
+    Semantic-neutral pair construction v2: toggle only the final period. The
+    historical guillemet variant is deliberately forbidden because it changed
+    model reactions in PAN-37 diagnostics. ``rng`` remains in the signature for
+    call-site compatibility but is not used.
 
     ОГРАНИЧЕНИЕ (честно, не скрывается): в agent-режиме заполняющий
     responses_todo.jsonl видит ВЕСЬ файл целиком и теоретически может заметить,
@@ -319,20 +320,9 @@ def make_decoy_text(original_text: str, rng) -> str:
     API-провайдеров (anthropic/openai) каждый вызов независим (см.
     generate.generate_responses — цикл per-task), там этого риска нет вовсе.
     """
+    del rng
     text = original_text.strip()
-
-    def _toggle_period(t: str) -> str:
-        return t[:-1] if t.endswith((".", "!", "?")) else t + "."
-
-    def _toggle_guillemets(t: str) -> str:
-        if t.startswith("«") and t.endswith("»") and len(t) > 2:
-            return t[1:-1]
-        return f"«{t}»"
-
-    variants = [v for v in (_toggle_period(text), _toggle_guillemets(text)) if v != text]
-    if not variants:
-        variants = [text + " "]  # крайний вырожденный случай — гарантируем отличие
-    return rng.choice(variants)
+    return text[:-1] if text.endswith(".") else text + "."
 
 
 def pick_decoy_source(stimuli: list[dict], seed: int, study_name: str) -> dict:
@@ -374,7 +364,11 @@ def build_controls_manifest(study: dict, skill_root: Path, seed: int) -> dict:
     `controls: off` (см. controls_requested).
     """
     if not controls_requested(study):
-        return {"enabled": False, "reason": "study.yaml: controls: off"}
+        return {
+            "enabled": False,
+            "gate_version": CONTROLS_GATE_VERSION,
+            "reason": "study.yaml: controls: off",
+        }
 
     bank = load_placebo_bank(skill_root)
     placebo_entry = pick_placebo(bank, seed, study["name"])
@@ -399,9 +393,22 @@ def build_controls_manifest(study: dict, skill_root: Path, seed: int) -> dict:
         blind_labels[k]: real_ids_in_order[shuffled_positions[k]] for k in range(len(real_ids_in_order))
     }
     real_to_blind = {real_id: blind_id for blind_id, real_id in blind_to_real.items()}
+    # Real studies are validated to have segments before this helper. Keep the
+    # historical direct-helper contract for minimal unit fixtures that omit it.
+    k_predeclared = max(1, len(study.get("segments") or []))
 
     return {
         "enabled": True,
+        "gate_version": CONTROLS_GATE_VERSION,
+        "n_decoy_pairs": {
+            "planned_per_segment": controls_gate.PLANNED_N_DECOY_PAIRS,
+            "actual_by_segment": {},
+        },
+        "k_predeclared_segments": k_predeclared,
+        "alpha_method": controls_gate.ALPHA_METHOD,
+        "alpha_segment": controls_gate.FAMILYWISE_ALPHA / k_predeclared,
+        "sd_limit_e": controls_gate.SD_LIMIT_E,
+        "power_met": None,
         "placebo": {
             "real_id": PLACEBO_REAL_ID,
             "bank_id": placebo_entry["id"],
@@ -417,6 +424,7 @@ def build_controls_manifest(study: dict, skill_root: Path, seed: int) -> dict:
             "decoy_of": decoy_source["id"],
             "text": decoy_text,
             "blind_id": real_to_blind[DECOY_REAL_ID],
+            "construction_version": DECOY_CONSTRUCTION_VERSION,
         },
         "blind_to_real": blind_to_real,
         "real_to_blind": real_to_blind,
@@ -465,6 +473,14 @@ def build_effective_study(study: dict, controls_manifest: dict) -> dict:
 
     effective = dict(study)
     effective["stimuli"] = blinded_stimuli
+    if int(controls_manifest.get("gate_version", 1)) >= CONTROLS_GATE_VERSION:
+        effective["_controls_generation"] = {
+            "gate_version": CONTROLS_GATE_VERSION,
+            "planned_n_decoy_pairs_per_segment": controls_gate.PLANNED_N_DECOY_PAIRS,
+            "research_profiles_per_segment": int(study["respondents_per_segment"]),
+            "original_blind_id": real_to_blind[decoy["decoy_of"]],
+            "decoy_blind_id": decoy["blind_id"],
+        }
     return effective
 
 
@@ -1257,6 +1273,65 @@ def run_generate_stage(
 # ============================================================================
 
 
+def aggregate_respondent_pmfs(rows: list[dict], pmfs: np.ndarray) -> list[dict]:
+    """Aggregate sample PMFs to one row per profile x stimulus."""
+    keys = [
+        f"{row['segment']}||{row['stimulus_id']}||{int(row['respondent_idx']):03d}"
+        for row in rows
+    ]
+    counts: dict[str, int] = {}
+    for key in keys:
+        counts[key] = counts.get(key, 0) + 1
+    by_key = ssr_core.aggregate_pmfs_by_key(pmfs, keys)
+    output = []
+    for key, pmf in by_key.items():
+        segment, stimulus_id, respondent_idx = key.split("||")
+        output.append(
+            {
+                "segment": segment,
+                "stimulus_id": stimulus_id,
+                "respondent_idx": int(respondent_idx),
+                "n_samples": counts[key],
+                "pmf": pmf,
+                "e_value": float(ssr_core.expected_value(pmf)[0]),
+            }
+        )
+    return output
+
+
+def write_respondent_pmf_csv(path: Path, rows: list[dict]) -> None:
+    with path.open("w", encoding="utf-8", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(
+            ["segment", "stimulus_id", "respondent_idx", "n_samples", "P1", "P2", "P3", "P4", "P5", "E"]
+        )
+        for row in sorted(rows, key=lambda x: (x["segment"], x["stimulus_id"], x["respondent_idx"])):
+            writer.writerow(
+                [
+                    row["segment"], row["stimulus_id"], row["respondent_idx"], row["n_samples"],
+                    *[f"{p:.6f}" for p in row["pmf"]], f"{row['e_value']:.6f}",
+                ]
+            )
+
+
+def partition_scored_responses(
+    rows: list[dict], pmfs: np.ndarray, controls_manifest: dict
+) -> tuple[list[dict], np.ndarray, list[dict], np.ndarray, int]:
+    """Enforce the gate-v3 no-leakage boundary before any aggregation."""
+    main_indices = [i for i, row in enumerate(rows) if not bool(row.get("control_only", False))]
+    control_only_count = len(rows) - len(main_indices)
+    main_rows = [rows[i] for i in main_indices]
+    main_pmfs = pmfs[np.asarray(main_indices, dtype=int)]
+    controls_pair_indices: list[int] = []
+    if int(controls_manifest.get("gate_version", 1)) >= CONTROLS_GATE_VERSION:
+        original_blind_id = controls_manifest["real_to_blind"][controls_manifest["decoy"]["decoy_of"]]
+        pair_ids = {original_blind_id, controls_manifest["decoy"]["blind_id"]}
+        controls_pair_indices = [i for i, row in enumerate(rows) if row["stimulus_id"] in pair_ids]
+    controls_rows = [rows[i] for i in controls_pair_indices]
+    controls_pmfs = pmfs[np.asarray(controls_pair_indices, dtype=int)]
+    return main_rows, main_pmfs, controls_rows, controls_pmfs, control_only_count
+
+
 def run_score_stage(run_dir: Path, config: dict, anchor_sets: list[dict[int, str]], manifest: dict) -> None:
     responses_path = run_dir / "responses.jsonl"
     if not responses_path.exists():
@@ -1367,6 +1442,14 @@ def run_score_stage(run_dir: Path, config: dict, anchor_sets: list[dict[int, str
     except Exception as exc:  # кросс-чек опционален — никогда не роняем score-стадию из-за него
         logger.debug("Кросс-чек semantic-similarity-rating пропущен из-за ошибки: %s", exc)
 
+    # Gate v3 isolation boundary: added profiles are scored, but never enter any
+    # research PMF/ranking/stability output. The controls-only file contains the
+    # original-decoy pair for both research and added profiles.
+    controls_manifest = manifest.get("controls") or {}
+    main_rows, main_pmfs, controls_rows, controls_pmfs, control_only_count = partition_scored_responses(
+        rows, pmf_per_response, controls_manifest
+    )
+
     # НОВОЕ в v1.3 (§1.3.2/1.3.4): pmf_by_sample.csv — гранулярность "1 строка = 1
     # ответ" (segment, stimulus_id, respondent_idx, sample_idx), т.е. САМ
     # pmf_per_response ДО усреднения по сэмплам, просто экспортированный на диск.
@@ -1379,10 +1462,10 @@ def run_score_stage(run_dir: Path, config: dict, anchor_sets: list[dict[int, str
         writer.writerow(
             ["segment", "stimulus_id", "respondent_idx", "sample_idx", "P1", "P2", "P3", "P4", "P5", "E"]
         )
-        e_per_response = ssr_core.expected_value(pmf_per_response).flatten()
+        e_per_response = ssr_core.expected_value(main_pmfs).flatten()
         sample_export_rows = [
-            (r["segment"], r["stimulus_id"], int(r["respondent_idx"]), int(r["sample_idx"]), pmf_per_response[i], e_per_response[i])
-            for i, r in enumerate(rows)
+            (r["segment"], r["stimulus_id"], int(r["respondent_idx"]), int(r["sample_idx"]), main_pmfs[i], e_per_response[i])
+            for i, r in enumerate(main_rows)
         ]
         for segment, stimulus_id, respondent_idx, sample_idx, pmf_row, e_val in sorted(
             sample_export_rows, key=lambda x: (x[0], x[1], x[2], x[3])
@@ -1393,26 +1476,7 @@ def run_score_stage(run_dir: Path, config: dict, anchor_sets: list[dict[int, str
 
     # Уровень "PMF ответа" -> "PMF респондента": усреднение по сэмплам (sample_idx) одного
     # (segment, stimulus_id, respondent_idx).
-    resp_keys = [f"{r['segment']}||{r['stimulus_id']}||{int(r['respondent_idx']):03d}" for r in rows]
-    n_samples_by_key: dict[str, int] = {}
-    for k in resp_keys:
-        n_samples_by_key[k] = n_samples_by_key.get(k, 0) + 1
-    resp_pmf_by_key = ssr_core.aggregate_pmfs_by_key(pmf_per_response, resp_keys)
-
-    resp_rows = []
-    for key, pmf in resp_pmf_by_key.items():
-        segment, stimulus_id, respondent_idx = key.split("||")
-        e_val = float(ssr_core.expected_value(pmf)[0])
-        resp_rows.append(
-            {
-                "segment": segment,
-                "stimulus_id": stimulus_id,
-                "respondent_idx": int(respondent_idx),
-                "n_samples": n_samples_by_key[key],
-                "pmf": pmf,
-                "e_value": e_val,
-            }
-        )
+    resp_rows = aggregate_respondent_pmfs(main_rows, main_pmfs)
 
     # Уровень "PMF респондента" -> "PMF сегмента": усреднение по респондентам одного
     # (segment, stimulus_id). CI считается бутстрепом по E-значениям респондентов той же группы
@@ -1451,20 +1515,13 @@ def run_score_stage(run_dir: Path, config: dict, anchor_sets: list[dict[int, str
         )
 
     resp_csv_path = run_dir / "pmf_by_respondent.csv"
-    with resp_csv_path.open("w", encoding="utf-8", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerow(["segment", "stimulus_id", "respondent_idx", "n_samples", "P1", "P2", "P3", "P4", "P5", "E"])
-        for r in sorted(resp_rows, key=lambda x: (x["segment"], x["stimulus_id"], x["respondent_idx"])):
-            writer.writerow(
-                [
-                    r["segment"],
-                    r["stimulus_id"],
-                    r["respondent_idx"],
-                    r["n_samples"],
-                    *[f"{p:.6f}" for p in r["pmf"]],
-                    f"{r['e_value']:.6f}",
-                ]
-            )
+    write_respondent_pmf_csv(resp_csv_path, resp_rows)
+
+    controls_resp_csv_path: Optional[Path] = None
+    if controls_rows:
+        controls_resp_rows = aggregate_respondent_pmfs(controls_rows, controls_pmfs)
+        controls_resp_csv_path = run_dir / "controls_pmf_by_respondent.csv"
+        write_respondent_pmf_csv(controls_resp_csv_path, controls_resp_rows)
 
     seg_csv_path = run_dir / "pmf_by_segment.csv"
     with seg_csv_path.open("w", encoding="utf-8", newline="") as f:
@@ -1483,7 +1540,10 @@ def run_score_stage(run_dir: Path, config: dict, anchor_sets: list[dict[int, str
                 ]
             )
 
-    print(f"-- score: готово -> {resp_csv_path.name}, {seg_csv_path.name}, {sample_csv_path.name}")
+    outputs = [resp_csv_path.name, seg_csv_path.name, sample_csv_path.name]
+    if controls_resp_csv_path is not None:
+        outputs.append(controls_resp_csv_path.name)
+    print("-- score: готово -> " + ", ".join(outputs))
 
     # §1.5: config.yaml["embedding"]["validated_stack"] (или, толерантно, верхнеуровневое
     # config.yaml["validated_stack"]) — метка "победившего" эмбеддера после embedder_ab.py
@@ -1503,6 +1563,8 @@ def run_score_stage(run_dir: Path, config: dict, anchor_sets: list[dict[int, str
         "pmf_temperature": pmf_temperature,
         "min_anchor_sets": min_anchor_sets,
         "n_responses_scored": len(rows),
+        "n_research_responses_scored": len(main_rows),
+        "n_control_only_responses_scored": control_only_count,
         "bootstrap_iters": bootstrap_iters,
         "bootstrap_seed": seed,
         "ci": ci,
@@ -1559,6 +1621,12 @@ def compute_controls_status_line(controls_manifest: Optional[dict], controls_ver
         return "контроли недоступны (прогон выполнен до v1.3 — самоконтроль не проводился)"
     if not controls_manifest.get("enabled"):
         return "контроли отключены явным флагом study.yaml — самоконтроль не проводился"
+    if controls_verdict.get("decoy_status") == "INCONCLUSIVE":
+        return (
+            "прогон НЕ прошёл самоконтроль: "
+            f"{controls_verdict.get('decoy_reason', 'недостаточно данных')}; "
+            "выводы не использовать"
+        )
     if controls_verdict.get("controls_failed"):
         return "прогон НЕ прошёл самоконтроль (см. приложение) — выводы не использовать"
     return "плацебо и ловушка на своих местах — самоконтроль пройден"
@@ -1575,6 +1643,12 @@ def compute_controls_failed_banner(controls_verdict: dict) -> str:
     """
     if not controls_verdict.get("controls_failed"):
         return ""
+    if controls_verdict.get("decoy_status") == "INCONCLUSIVE":
+        return (
+            "> **прогон не прошёл самоконтроль, выводы не использовать.** "
+            f"{controls_verdict.get('decoy_reason', 'Недостаточно данных контроля')}; "
+            "см. детализацию в разделе «Приложение»."
+        )
     return (
         "> **прогон не прошёл самоконтроль, выводы не использовать.** Негативные "
         "контроли §1.4 провалены (плацебо не оказалось в нижней трети рейтинга "
@@ -1726,6 +1800,12 @@ def run_report_stage(
 
     all_seg_rows = unblind_rows(report.read_pmf_by_segment(seg_csv_path), controls_manifest)
     all_resp_rows = unblind_rows(report.read_pmf_by_respondent(resp_csv_path), controls_manifest)
+    controls_resp_csv_path = run_dir / "controls_pmf_by_respondent.csv"
+    controls_resp_rows = (
+        unblind_rows(report.read_pmf_by_respondent(controls_resp_csv_path), controls_manifest)
+        if controls_resp_csv_path.exists()
+        else all_resp_rows
+    )
     sample_csv_path = run_dir / "pmf_by_sample.csv"
     # pmf_by_sample.csv — НОВЫЙ артефакт v1.3 (см. run_score_stage); прогоны,
     # пересчитанные СТАРЫМ score-кодом (до этой правки) или ещё не пересчитанные,
@@ -1752,7 +1832,13 @@ def run_report_stage(
         segments=list(study["segments"]),
         bootstrap_iters=bootstrap_iters,
         seed=bootstrap_seed,
+        controls_resp_rows=controls_resp_rows,
     )
+    if controls_manifest and int(controls_manifest.get("gate_version", 1)) >= CONTROLS_GATE_VERSION:
+        controls_manifest["n_decoy_pairs"]["actual_by_segment"] = controls_verdict.get(
+            "n_decoy_pairs_actual_by_segment", {}
+        )
+        controls_manifest["power_met"] = controls_verdict.get("power_met", False)
     sibling_rankings_by_segment = find_sibling_rankings(run_dir, study["name"], real_stimulus_ids)
 
     mode = compute_run_mode(manifest, controls_verdict)
@@ -1798,7 +1884,8 @@ def run_report_stage(
     samples_per_respondent = int(manifest.get("samples_per_respondent", 2))
     n_respondents_total = n_segments * respondents_per_segment
     n_responses_total = score_stage.get(
-        "n_responses_scored", n_respondents_total * n_stimuli * samples_per_respondent
+        "n_research_responses_scored",
+        score_stage.get("n_responses_scored", n_respondents_total * n_stimuli * samples_per_respondent),
     )
     segment_names_list = ", ".join(segments.get(sid, {}).get("name", sid) for sid in study["segments"])
 

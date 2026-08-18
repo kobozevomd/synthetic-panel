@@ -117,10 +117,9 @@ class TestMakeDecoyText(unittest.TestCase):
         import random
 
         rng = random.Random(0)
-        # Гоняем оба детерминированных варианта (rng.choice выбирает один из двух) -
-        # проверяем, что РЕЗУЛЬТАТ - один из ожидаемых типов правки.
-        decoy = run_study.make_decoy_text("Без точки", rng)
-        self.assertIn(decoy, ("Без точки.", "«Без точки»"))
+        self.assertEqual(run_study.make_decoy_text("Без точки", rng), "Без точки.")
+        self.assertEqual(run_study.make_decoy_text("С точкой.", rng), "С точкой")
+        self.assertNotIn("«", run_study.make_decoy_text("Без точки", rng))
 
 
 class TestBuildControlsManifest(unittest.TestCase):
@@ -128,6 +127,10 @@ class TestBuildControlsManifest(unittest.TestCase):
         study = _fake_study()
         cm = run_study.build_controls_manifest(study, _SKILL_ROOT, seed=42)
         self.assertTrue(cm["enabled"])
+        self.assertEqual(cm["gate_version"], 3)
+        self.assertEqual(cm["n_decoy_pairs"]["planned_per_segment"], 24)
+        self.assertEqual(cm["alpha_method"], "bonferroni_arbitrary_dependence")
+        self.assertEqual(cm["decoy"]["construction_version"], "period-toggle-v2")
         self.assertEqual(cm["placebo"]["real_id"], run_study.PLACEBO_REAL_ID)
         self.assertEqual(cm["decoy"]["real_id"], run_study.DECOY_REAL_ID)
         self.assertIn(cm["decoy"]["decoy_of"], {"A", "B"})
@@ -143,7 +146,10 @@ class TestBuildControlsManifest(unittest.TestCase):
     def test_disabled_via_controls_off(self):
         study = _fake_study(controls="off")
         cm = run_study.build_controls_manifest(study, _SKILL_ROOT, seed=42)
-        self.assertEqual(cm, {"enabled": False, "reason": "study.yaml: controls: off"})
+        self.assertEqual(
+            cm,
+            {"enabled": False, "gate_version": 3, "reason": "study.yaml: controls: off"},
+        )
 
     def test_stimulus_id_clash_with_reserved_id_raises(self):
         study = _fake_study()
@@ -246,6 +252,21 @@ class TestUnblindAndSplit(unittest.TestCase):
             {r["stimulus_id"] for r in control_rows},
             {run_study.PLACEBO_REAL_ID, run_study.DECOY_REAL_ID},
         )
+
+
+class TestGateV3ClientStatus(unittest.TestCase):
+    def test_inconclusive_reason_is_visible_in_status_and_banner(self):
+        controls = {"enabled": True, "gate_version": 3}
+        verdict = {
+            "controls_failed": True,
+            "decoy_status": "INCONCLUSIVE",
+            "decoy_reason": "дисперсия пары выше проектного диапазона гейта: seg1",
+        }
+        status = run_study.compute_controls_status_line(controls, verdict)
+        banner = run_study.compute_controls_failed_banner(verdict)
+        self.assertIn("дисперсия пары выше проектного диапазона", status)
+        self.assertIn("дисперсия пары выше проектного диапазона", banner)
+        self.assertIn("прогон не прошёл самоконтроль", banner)
 
 
 class TestFindSiblingRankings(unittest.TestCase):

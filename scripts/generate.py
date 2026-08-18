@@ -521,6 +521,8 @@ def build_task_prompt(
 # Задачи генерации
 # ============================================================================
 
+CONTROL_ONLY_SAMPLES_PER_STIMULUS = 4
+
 
 @dataclass
 class ResponseTask:
@@ -537,6 +539,7 @@ class ResponseTask:
     # т.е. полностью обратно совместимы со study.yaml без визуальных стимулов.
     image_path: Optional[str] = None  # абсолютный путь к файлу (уже разрешён run_study.py)
     label: Optional[str] = None  # короткая подпись стимула (обязательна для image-only)
+    control_only: bool = False  # gate v3: excluded from every main research aggregate
 
 
 def build_tasks(
@@ -546,7 +549,7 @@ def build_tasks(
     seed: int,
     samples_per_respondent: int,
 ) -> list[ResponseTask]:
-    """Строит полный список задач (сегмент × респондент × стимул × сэмпл), детерминированно от seed."""
+    """Build research tasks plus the isolated gate-v3 original/decoy pairs."""
     tasks: list[ResponseTask] = []
     respondents_per_segment = int(study["respondents_per_segment"])
 
@@ -577,8 +580,46 @@ def build_tasks(
                             system_prompt=system_prompt,
                             image_path=image_path,
                             label=label,
+                            control_only=False,
                         )
                     )
+
+        controls_spec = study.get("_controls_generation") or {}
+        if int(controls_spec.get("gate_version", 1)) >= 3:
+            planned_n = int(controls_spec["planned_n_decoy_pairs_per_segment"])
+            research_n = int(controls_spec["research_profiles_per_segment"])
+            stimuli_by_id = {stimulus["id"]: stimulus for stimulus in study["stimuli"]}
+            control_ids = [
+                controls_spec["original_blind_id"],
+                controls_spec["decoy_blind_id"],
+            ]
+            missing = [stimulus_id for stimulus_id in control_ids if stimulus_id not in stimuli_by_id]
+            if missing:
+                raise ValueError(f"gate v3 control-only stimuli missing from effective study: {missing}")
+            for respondent_idx in range(research_n + 1, planned_n + 1):
+                profile = jitter_persona(segment, segment_id, respondent_idx, seed)
+                persona_card = build_persona_card(profile, segment)
+                system_prompt = build_system_prompt(profile, segment)
+                for stimulus_id in control_ids:
+                    stimulus = stimuli_by_id[stimulus_id]
+                    for sample_idx in range(1, CONTROL_ONLY_SAMPLES_PER_STIMULUS + 1):
+                        rid = f"{segment_id}__{stimulus_id}__{respondent_idx:03d}__{sample_idx}"
+                        tasks.append(
+                            ResponseTask(
+                                rid=rid,
+                                segment=segment_id,
+                                persona=persona_card,
+                                stimulus_id=stimulus_id,
+                                stimulus_text=stimulus.get("text", "") or "",
+                                question=question,
+                                respondent_idx=respondent_idx,
+                                sample_idx=sample_idx,
+                                system_prompt=system_prompt,
+                                image_path=stimulus.get("image"),
+                                label=stimulus.get("label"),
+                                control_only=True,
+                            )
+                        )
     return tasks
 
 
@@ -1056,6 +1097,7 @@ def write_agent_mode(tasks: list[ResponseTask], run_dir: Path, study_path: str) 
                 "question": task.question,
                 "respondent_idx": task.respondent_idx,
                 "sample_idx": task.sample_idx,
+                "control_only": task.control_only,
             }
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
@@ -1201,6 +1243,7 @@ def generate_responses(
                 "question": task.question,
                 "respondent_idx": task.respondent_idx,
                 "sample_idx": task.sample_idx,
+                "control_only": task.control_only,
                 "text": result.text,
                 "provider": provider_name,
                 "model": result.model,

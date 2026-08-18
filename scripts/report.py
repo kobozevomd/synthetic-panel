@@ -81,6 +81,7 @@ from typing import Optional, Sequence
 
 import numpy as np
 
+import controls_gate
 import ssr_core
 
 BLOCKS = "▁▂▃▄▅▆▇█"
@@ -616,6 +617,7 @@ def compute_controls_verdict(
     segments: list[str],
     bootstrap_iters: int,
     seed: int,
+    controls_resp_rows: Optional[list[dict]] = None,
 ) -> dict:
     """
     Вердикт негативных контролей ПО ВСЕМ сегментам исследования (строгий гейт —
@@ -634,6 +636,7 @@ def compute_controls_verdict(
     if not controls_manifest or not controls_manifest.get("enabled"):
         return {"applicable": False}
 
+    gate_version = int(controls_manifest.get("gate_version", 1))
     placebo_real_id = controls_manifest["placebo"]["real_id"]
     decoy_real_id = controls_manifest["decoy"]["real_id"]
     decoy_of = controls_manifest["decoy"]["decoy_of"]
@@ -683,18 +686,19 @@ def compute_controls_verdict(
         )
         placebo_passed_all = placebo_passed_all and bool(placebo_ok)
 
-        decoy_label = "н/д"
+        decoy_label = "gate v3 — рассчитывается после сегментного цикла"
         p_decoy_gt_original: Optional[float] = None
-        try:
-            e_matrix, _ = build_e_matrix(all_resp_rows, segment_id, [decoy_of, decoy_real_id])
-            boot = ssr_core.joint_paired_bootstrap_means(e_matrix, n_iters=bootstrap_iters, seed=seed)
-            p_decoy_gt_original = ssr_core.pairwise_win_probability(boot, 1, 0)
-            p_original_gt_decoy = ssr_core.pairwise_win_probability(boot, 0, 1)
-            decoy_label = separability_label(max(p_decoy_gt_original, p_original_gt_decoy))
-            decoy_ok = decoy_label == "в пределах шума"
-        except ValueError as exc:
-            decoy_ok = False
-            decoy_label = f"не удалось вычислить ({exc})"
+        decoy_ok = False
+        if gate_version < controls_gate.GATE_VERSION:
+            try:
+                e_matrix, _ = build_e_matrix(all_resp_rows, segment_id, [decoy_of, decoy_real_id])
+                boot = ssr_core.joint_paired_bootstrap_means(e_matrix, n_iters=bootstrap_iters, seed=seed)
+                p_decoy_gt_original = ssr_core.pairwise_win_probability(boot, 1, 0)
+                p_original_gt_decoy = ssr_core.pairwise_win_probability(boot, 0, 1)
+                decoy_label = separability_label(max(p_decoy_gt_original, p_original_gt_decoy))
+                decoy_ok = decoy_label == "в пределах шума"
+            except ValueError as exc:
+                decoy_label = f"не удалось вычислить ({exc})"
         decoy_passed_all = decoy_passed_all and bool(decoy_ok)
 
         per_segment_detail.append(
@@ -713,11 +717,39 @@ def compute_controls_verdict(
             }
         )
 
+    v3 = None
+    if gate_version >= controls_gate.GATE_VERSION:
+        v3 = controls_gate.compute_gate_v3(
+            rows=controls_resp_rows if controls_resp_rows is not None else all_resp_rows,
+            segments=segments,
+            original_id=decoy_of,
+            decoy_id=decoy_real_id,
+            bootstrap_iters=controls_gate.BOOTSTRAP_ITERATIONS,
+            seed=seed,
+        )
+        by_segment = {row["segment"]: row for row in v3["per_segment"]}
+        for detail in per_segment_detail:
+            diagnostic = by_segment.get(detail["segment"])
+            if diagnostic is None:
+                detail["decoy_ok"] = False
+                detail["decoy_label"] = "неполные парные данные"
+                continue
+            detail.update(diagnostic)
+            detail["decoy_ok"] = not diagnostic["guard_fail"] and not diagnostic["sd_out_of_range"]
+            detail["decoy_label"] = (
+                "guard FAIL" if diagnostic["guard_fail"]
+                else "SD вне диапазона" if diagnostic["sd_out_of_range"]
+                else "диагностика v3"
+            )
+        decoy_passed_all = v3["status"] == "PASS"
+
     controls_failed = not (placebo_passed_all and decoy_passed_all)
-    return {
+    result = {
         "applicable": True,
+        "gate_version": gate_version,
         "placebo_passed": placebo_passed_all,
         "decoy_passed": decoy_passed_all,
+        "decoy_status": v3["status"] if v3 is not None else ("PASS" if decoy_passed_all else "FAIL"),
         "controls_failed": controls_failed,
         "per_segment": per_segment_detail,
         "decoy_of": decoy_of,
@@ -729,6 +761,19 @@ def compute_controls_verdict(
         # ниже показывает строку про kind, только если она не None.
         "placebo_kind": (controls_manifest.get("placebo") or {}).get("kind"),
     }
+    if v3 is not None:
+        result.update(
+            decoy_reason=v3["reason"],
+            decoy_gate_v3=v3,
+            pooled_decoy_gap=v3["pooled_gap"],
+            pooled_decoy_ci_low=v3["pooled_ci_low"],
+            pooled_decoy_ci_high=v3["pooled_ci_high"],
+            n_decoy_pairs_actual_by_segment=v3["actual_n_decoy_pairs_by_segment"],
+            power_met=v3["power_met"],
+            alpha_method=v3["alpha_method"],
+            alpha_segment=v3["alpha_segment"],
+        )
+    return result
 
 
 # ============================================================================
@@ -954,6 +999,24 @@ def render_controls_verdict_detail(controls_verdict: dict) -> str:
     if placebo_kind:
         lines.append(f"Плацебо этого прогона — kind=«{placebo_kind}» (§2.2 v1.4, контрастные плацебо).")
 
+    gate_version = int(controls_verdict.get("gate_version", 1))
+    if gate_version >= controls_gate.GATE_VERSION:
+        status = controls_verdict.get("decoy_status", "INCONCLUSIVE")
+        gap = controls_verdict.get("pooled_decoy_gap")
+        low = controls_verdict.get("pooled_decoy_ci_low")
+        high = controls_verdict.get("pooled_decoy_ci_high")
+        pooled = (
+            f"pooled ΔE={gap:+.3f}, 90% CI [{low:+.3f}; {high:+.3f}]"
+            if None not in (gap, low, high)
+            else "pooled CI недоступен"
+        )
+        lines.append(
+            f"Пара-ловушка gate v3: {status}; {pooled}; "
+            f"Bonferroni α_seg={controls_verdict.get('alpha_segment', 0.0):.6f}; "
+            f"power_met={str(bool(controls_verdict.get('power_met'))).lower()}."
+        )
+        lines.append(f"Причина: {controls_verdict.get('decoy_reason', '?')}.")
+
     for detail in controls_verdict.get("per_segment", []):
         placebo_verdict = "OK" if detail["placebo_ok"] else "ПРОВАЛ"
         decoy_verdict = "OK" if detail["decoy_ok"] else "ПРОВАЛ"
@@ -969,10 +1032,22 @@ def render_controls_verdict_detail(controls_verdict: dict) -> str:
             f"; предупреждение: плацебо статистически неотличим от {', '.join(gray)} "
             f"(слабый стимул или слабый контроль)" if gray else ""
         )
+        if gate_version >= controls_gate.GATE_VERSION and detail.get("sample_sd") is not None:
+            decoy_text = (
+                f"пара-ловушка «{controls_verdict.get('decoy_of', '?')}»: "
+                f"ΔE={detail['mean_delta']:+.3f}, SD={detail['sample_sd']:.3f}, "
+                f"guard CI [{detail['guard_ci_low']:+.3f}; {detail['guard_ci_high']:+.3f}], "
+                f"n={detail['n_decoy_pairs']}, guard_fail={str(detail['guard_fail']).lower()}, "
+                f"sd_out_of_range={str(detail['sd_out_of_range']).lower()}"
+            )
+        else:
+            decoy_text = (
+                f"пара-ловушка (косметическая копия стимула «{controls_verdict.get('decoy_of', '?')}») "
+                f"— {detail['decoy_label']} ({decoy_verdict})"
+            )
         lines.append(
             f"- {detail['segment']}: плацебо — ранг {rank_txt} ({placebo_verdict}){beats_txt}{gray_txt}; "
-            f"пара-ловушка (косметическая копия стимула «{controls_verdict.get('decoy_of', '?')}») "
-            f"— {detail['decoy_label']} ({decoy_verdict})."
+            f"{decoy_text}."
         )
     return "\n".join(lines)
 
