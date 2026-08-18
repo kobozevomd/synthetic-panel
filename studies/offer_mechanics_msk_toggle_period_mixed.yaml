@@ -1,0 +1,20 @@
+name: offer_mechanics_msk_toggle_period_mixed
+type: claims_ranking
+question_scale: purchase_intent
+controls: off
+
+stimuli:
+  - id: SEMEYNAYA
+    text: "Семейная ипотека 3,5% с лимитом до 30 млн рублей"
+  - id: __decoy_toggle_period__
+    text: "Семейная ипотека 3,5% с лимитом до 30 млн рублей."
+
+segments: [nam_stalo_tesno, kvartira_rebenku, berut_na_kotlovane]
+respondents_per_segment: 10
+samples_per_respondent: 4
+
+notes: >
+  PAN-37 diagnostic only. The point-toggle responses are newly generated, while
+  SEMEYNAYA responses are copied byte-for-byte from the accepted immutable API
+  run and only their blinded stimulus id is unblinded for scoring. This is not a
+  full repeated study and must not be represented as one.

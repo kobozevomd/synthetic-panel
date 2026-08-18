@@ -1,0 +1,31 @@
+llm:
+  provider: anthropic
+  model: claude-sonnet-5
+  temperature: 0.85  # excluded from Sonnet 5 payload; retained only for provider interface compatibility
+  max_tokens: 300
+  samples_per_respondent: 4
+
+budget:
+  run_cap_usd: 1.0
+  daily_cap_usd: 20.0
+  max_attempts: 4
+  backoff_seconds: 1
+
+embedding:
+  model: ai-forever/ru-en-RoSBERTa
+  prefix: "classification: "
+  device: cpu
+  validated_stack: true
+  validated_at: "2026-07-18"
+  validated_by: "scripts/test_anchors.py + scripts/embedder_ab.py"
+  anchors_version: 2
+
+ssr:
+  epsilon: 0.001
+  pmf_temperature: 1.0
+  min_anchor_sets: 4
+
+report:
+  bootstrap_iters: 1000
+  seed: 42
+  ci: 0.95
