@@ -1,0 +1,83 @@
+version: pan37-controls-gate-v2-simulation-contract-v1
+locked_at: "2026-08-18T20:15:00+03:00"
+
+# These values are fixed before empirical SDs or simulation outcomes are read.
+simulations_per_scenario: 1000
+bootstrap_iterations_per_simulation: 2000
+bootstrap_ci_level: 0.90
+equivalence_margin_e: 0.20
+required_success_rate: 0.95
+global_shift_e: 0.35
+local_shift_e: 0.35
+
+analysis_unit: >
+  One respondent-level delta d_i = E_decoy - E_original after all samples of
+  the profile have already been aggregated by the existing SSR scoring path.
+
+empirical_sd_method: >
+  For each segment separately, collect respondent-level deltas from the three
+  frozen offer_mechanics runs. Within every run x segment cell subtract that
+  cell's observed mean, pool the centered residuals for the segment across the
+  three runs, and compute sample standard deviation with ddof=1. Simulation
+  draws are Gaussian with the fixed scenario mean and that segment-specific SD.
+  Actual respondent counts and segment weights from the three-run design are
+  retained (10 profiles in each of the three segments).
+
+pooled_bootstrap_method: >
+  Resample respondent profiles with replacement independently inside each
+  segment, preserving each segment's observed n. Combine the resampled segment
+  means with weights n_segment / total_n and take equal-tailed 5th and 95th
+  percentiles for the pooled 90% CI. Per-segment CIs use the same stratified
+  bootstrap draws.
+
+scenarios:
+  null:
+    shifts: [0.0, 0.0, 0.0]
+    data_seed: 271828
+    bootstrap_seed: 880001
+    expected_v2: {status: PASS, minimum_rate: 0.95}
+    also_measure_v1: true
+  global_positive:
+    shifts: [0.35, 0.35, 0.35]
+    data_seed: 314159
+    bootstrap_seed: 880002
+    expected_v2: {status: FAIL, minimum_rate: 0.95}
+  global_negative:
+    shifts: [-0.35, -0.35, -0.35]
+    data_seed: 161803
+    bootstrap_seed: 880003
+    expected_v2: {status: FAIL, minimum_rate: 0.95}
+
+  # Anti-cancellation is exercised for every segment and both signs. In the
+  # "zero" family the other two segments remain at 0. In the "compensated"
+  # family they each receive the opposite half-shift, so the pooled true mean
+  # is exactly zero and only the local wholly-outside rule can fail the run.
+  local_positive_zero:
+    target_segment_indices: [0, 1, 2]
+    other_shift: 0.0
+    data_seeds: [100901, 100902, 100903]
+    bootstrap_seeds: [881001, 881002, 881003]
+    expected_v2: {status: FAIL, minimum_rate_each: 0.95}
+  local_negative_zero:
+    target_segment_indices: [0, 1, 2]
+    other_shift: 0.0
+    data_seeds: [100911, 100912, 100913]
+    bootstrap_seeds: [881011, 881012, 881013]
+    expected_v2: {status: FAIL, minimum_rate_each: 0.95}
+  local_positive_compensated:
+    target_segment_indices: [0, 1, 2]
+    other_shift: -0.175
+    data_seeds: [100921, 100922, 100923]
+    bootstrap_seeds: [881021, 881022, 881023]
+    expected_v2: {status: FAIL, minimum_rate_each: 0.95}
+  local_negative_compensated:
+    target_segment_indices: [0, 1, 2]
+    other_shift: 0.175
+    data_seeds: [100931, 100932, 100933]
+    bootstrap_seeds: [881031, 881032, 881033]
+    expected_v2: {status: FAIL, minimum_rate_each: 0.95}
+
+no_post_result_tuning: >
+  If any required rate is below 0.95, do not change the margin, CI level,
+  empirical SD method, seeds, respondent counts, simulation count, or bootstrap
+  iterations. Stop, publish the failure in PAN-37, and do not accept the v2 code.
