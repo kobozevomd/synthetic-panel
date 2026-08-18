@@ -279,12 +279,14 @@ def stimulus_display_text(stimulus: dict) -> str:
     невалидного study.yaml, не должен срабатывать после валидации run_study.py).
     """
     text = (stimulus.get("text") or "").strip()
-    if text:
-        return text
     label = (stimulus.get("label") or "").strip()
-    if label:
-        return label
-    return stimulus.get("id", "")
+    display = text or label or stimulus.get("id", "")
+    # Stimuli are supplied/confirmed inputs, not panel measurements.  The
+    # explicit source tag keeps percentages inside ad claims from being
+    # mistaken by the client-report lint for uncited quantitative findings.
+    allowed_tags = {"[BA]", "[Mediascope]", "[DSM]", "[Росстат]", "[опрос]", "[клиент]"}
+    source_tag = stimulus.get("source_tag") if stimulus.get("source_tag") in allowed_tags else "[клиент]"
+    return f"{display} {source_tag}".strip()
 
 
 def separability_label(p_win: float) -> str:
@@ -595,7 +597,7 @@ def compute_reliability_summary(
             "samples_per_respondent >= 2 и/или ещё один завершённый прогон того же study)."
         )
     else:
-        summary_text = f"Топ-{top_n} воспроизведён в {x} из {y} проверок устойчивости."
+        summary_text = f"Оценка устойчивости: Топ-{top_n} воспроизведён в {x} из {y} проверок."
 
     return {"top_n": top_n, "checks": checks, "x": x, "y": y, "summary_text": summary_text}
 

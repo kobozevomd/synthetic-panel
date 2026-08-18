@@ -662,26 +662,32 @@ class TestStimulusDisplayText(unittest.TestCase):
     стимула для таблиц отчёта: text, иначе label (image-only), иначе id."""
 
     def test_uses_text_when_present(self):
-        self.assertEqual(report.stimulus_display_text({"id": "A", "text": "Текст стимула"}), "Текст стимула")
+        self.assertEqual(report.stimulus_display_text({"id": "A", "text": "Текст стимула"}), "Текст стимула [клиент]")
 
     def test_falls_back_to_label_when_text_empty(self):
         self.assertEqual(
             report.stimulus_display_text({"id": "A", "text": "", "label": "Вариант синий", "image": "/x.png"}),
-            "Вариант синий",
+            "Вариант синий [клиент]",
         )
 
     def test_falls_back_to_label_when_text_absent(self):
         self.assertEqual(
             report.stimulus_display_text({"id": "A", "label": "Вариант синий", "image": "/x.png"}),
-            "Вариант синий",
+            "Вариант синий [клиент]",
         )
 
     def test_falls_back_to_id_when_neither_text_nor_label(self):
-        self.assertEqual(report.stimulus_display_text({"id": "A"}), "A")
+        self.assertEqual(report.stimulus_display_text({"id": "A"}), "A [клиент]")
 
     def test_prefers_text_over_label_when_both_present(self):
         self.assertEqual(
-            report.stimulus_display_text({"id": "A", "text": "Текст", "label": "Метка"}), "Текст"
+            report.stimulus_display_text({"id": "A", "text": "Текст", "label": "Метка"}), "Текст [клиент]"
+        )
+
+    def test_stimulus_display_text_honours_allowlisted_source_tag(self):
+        self.assertEqual(
+            report.stimulus_display_text({"id": "A", "text": "Скидка 20%", "source_tag": "[BA]"}),
+            "Скидка 20% [BA]",
         )
 
 
