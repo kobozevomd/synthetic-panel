@@ -1,6 +1,13 @@
-version: pan37-controls-gate-v3-preregistration-1
+version: pan37-controls-gate-v3-preregistration-2
 status: frozen_before_implementation
-frozen_at: "2026-08-18T23:40:00+03:00"
+frozen_at: "2026-08-18T23:44:00+03:00"
+supersedes_preregistration_commit: e30e6c84dec449eb918a67bc806e7a8fa53d863e
+preimplementation_correction: >-
+  Version 1 recorded conceptual zero-based jitter offsets although the existing
+  runner's respondent_idx and jitter seed input are one-based. No implementation
+  or simulation occurred between versions. Version 2 corrects only those ranges
+  and makes the already-declared floating boundary comparison literal; n and all
+  statistical/simulation parameters are unchanged.
 supersedes_for_new_runs: pan37-controls-gate-v2-simulation-contract-v1
 does_not_modify:
   commit: b14f3a1582c07e075ac6b147bd71324b0e62e6eb
@@ -51,8 +58,9 @@ analysis_design:
     samples_per_profile_stimulus
   added_calls_for_current_design: 336
   jitter_indices:
-    research_profiles: [0, 9]
-    control_only_profiles: [10, 23]
+    indexing: one_based_existing_respondent_idx_and_jitter_seed_input
+    research_profiles: [1, 10]
+    control_only_profiles: [11, 24]
   generation_rule: >-
     Runner creates the additional profiles automatically. They answer only the
     original and decoy, never placebo or any other research stimulus.
@@ -113,7 +121,7 @@ dispersion_check:
   statistic: respondent-level sample SD of paired deltas
   ddof: 1
   sd_limit_e: 0.40
-  out_of_range_iff: sample_sd > 0.40
+  out_of_range_iff: sample_sd - 0.40 > 1.0e-12
   floating_boundary_tolerance: 1.0e-12
   reason: дисперсия пары выше проектного диапазона гейта
 
