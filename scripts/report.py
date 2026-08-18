@@ -286,7 +286,8 @@ def stimulus_display_text(stimulus: dict) -> str:
     # mistaken by the client-report lint for uncited quantitative findings.
     allowed_tags = {"[BA]", "[Mediascope]", "[DSM]", "[Росстат]", "[опрос]", "[клиент]"}
     source_tag = stimulus.get("source_tag") if stimulus.get("source_tag") in allowed_tags else "[клиент]"
-    return f"{display} {source_tag}".strip()
+    # Prefix the tag so truncation of long stimulus text cannot remove it.
+    return f"{source_tag} {display}".strip()
 
 
 def separability_label(p_win: float) -> str:
