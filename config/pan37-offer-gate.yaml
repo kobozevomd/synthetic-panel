@@ -10,7 +10,7 @@ llm:
   samples_per_respondent: 4
 
 budget:
-  run_cap_usd: 11.0
+  run_cap_usd: 8.0
   daily_cap_usd: 20.0
   max_attempts: 4
   backoff_seconds: 1
