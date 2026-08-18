@@ -636,6 +636,9 @@ class TestManifestResolution(unittest.TestCase):
     def test_resolve_controls_failed_top_level_true(self):
         self.assertTrue(rc.resolve_controls_failed({"controls_failed": True}))
 
+    def test_resolve_controls_failed_actual_report_verdict_path(self):
+        self.assertTrue(rc.resolve_controls_failed({"controls_verdict": {"controls_failed": True}}))
+
     def test_resolve_controls_failed_nested_in_stage(self):
         manifest = {"stages": {"controls": {"controls_failed": True}}}
         self.assertTrue(rc.resolve_controls_failed(manifest))

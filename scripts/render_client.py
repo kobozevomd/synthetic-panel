@@ -210,6 +210,7 @@ def resolve_controls_failed(manifest: Optional[dict]) -> bool:
         return False
     candidates = [
         _dig(manifest, "controls_failed"),
+        _dig(manifest, "controls_verdict.controls_failed"),
         _dig(manifest, "controls.controls_failed"),
         _dig(manifest, "controls.failed"),
     ]
