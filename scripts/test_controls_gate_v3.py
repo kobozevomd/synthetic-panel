@@ -1,11 +1,16 @@
 #!/usr/bin/env python3
 """Focused API-free tests for PAN-37 controls gate v3."""
 
+import csv
+import json
+import tempfile
 import unittest
+from pathlib import Path
 
 import numpy as np
 
 import controls_gate
+import controls_gate_v3_verify_independent as independent_verify
 import generate
 import report
 import run_study
@@ -192,6 +197,61 @@ class TestReportServiceIntegration(unittest.TestCase):
         rendered = report.render_controls_verdict_detail(verdict)
         self.assertIn("gate v3: PASS", rendered)
         self.assertIn("power_met=true", rendered)
+
+
+class TestIndependentHistoricalVerifier(unittest.TestCase):
+    def test_point_shadow_uses_frozen_api_original_not_shadow_copy(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            api_quotes = root / "api_quotes"
+            point_shadow = root / "point_shadow"
+            api_quotes.mkdir()
+            point_shadow.mkdir()
+            (api_quotes / "manifest.json").write_text(
+                json.dumps({"controls": {"blind_to_real": {}}}), encoding="utf-8"
+            )
+            fields = ["segment", "stimulus_id", "respondent_idx", "E"]
+            with (api_quotes / "pmf_by_respondent.csv").open(
+                "w", encoding="utf-8", newline=""
+            ) as fh:
+                writer = csv.DictWriter(fh, fieldnames=fields)
+                writer.writeheader()
+                for segment in independent_verify.SEGMENTS:
+                    for idx in range(1, 25):
+                        writer.writerow(
+                            {
+                                "segment": segment,
+                                "stimulus_id": "SEMEYNAYA",
+                                "respondent_idx": idx,
+                                "E": 4.0,
+                            }
+                        )
+            with (point_shadow / "pmf_by_respondent.csv").open(
+                "w", encoding="utf-8", newline=""
+            ) as fh:
+                writer = csv.DictWriter(fh, fieldnames=fields)
+                writer.writeheader()
+                for segment in independent_verify.SEGMENTS:
+                    for idx in range(1, 25):
+                        writer.writerow(
+                            {
+                                "segment": segment,
+                                "stimulus_id": "SEMEYNAYA",
+                                "respondent_idx": idx,
+                                "E": 0.0,
+                            }
+                        )
+                        writer.writerow(
+                            {
+                                "segment": segment,
+                                "stimulus_id": "__decoy_toggle_period__",
+                                "respondent_idx": idx,
+                                "E": 4.0,
+                            }
+                        )
+            result = independent_verify.point(point_shadow, api_quotes)
+            self.assertEqual(result["status"], "PASS")
+            self.assertAlmostEqual(result["pooled_gap"], 0.0, places=12)
 
 
 if __name__ == "__main__":

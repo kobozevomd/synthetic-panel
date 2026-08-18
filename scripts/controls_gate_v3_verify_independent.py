@@ -106,9 +106,31 @@ def standard(run_dir: Path) -> dict:
     return calculate(paired_deltas(read_rows(run_dir / "pmf_by_respondent.csv", mapping), "__decoy__"))
 
 
-def point(run_dir: Path) -> dict:
-    rows = read_rows(run_dir / "pmf_by_respondent.csv")
-    return calculate(paired_deltas(rows, "__decoy_toggle_period__"))
+def point(point_run_dir: Path, api_quotes_run_dir: Path) -> dict:
+    """Pair the point decoy with the frozen original from the accepted API run.
+
+    The shadow run is intentionally mixed: only its point-toggle decoy is new.
+    Reading its copied original would silently change the preregistered comparison
+    if that copy was rounded differently, so reconstruct the pair from the two
+    authoritative inputs just like the primary diagnostic path does.
+    """
+    api_manifest = json.loads(
+        (api_quotes_run_dir / "manifest.json").read_text(encoding="utf-8")
+    )
+    mapping = (api_manifest.get("controls") or {}).get("blind_to_real")
+    original_rows = [
+        row
+        for row in read_rows(api_quotes_run_dir / "pmf_by_respondent.csv", mapping)
+        if row["stimulus_id"] == ORIGINAL
+    ]
+    point_decoy_rows = [
+        row
+        for row in read_rows(point_run_dir / "pmf_by_respondent.csv")
+        if row["stimulus_id"] == "__decoy_toggle_period__"
+    ]
+    return calculate(
+        paired_deltas(original_rows + point_decoy_rows, "__decoy_toggle_period__")
+    )
 
 
 def main() -> int:
@@ -122,7 +144,7 @@ def main() -> int:
         "version": "pan37-controls-gate-v3-independent-csv-v1",
         "agent_quotes": standard(args.agent_run),
         "api_quotes": standard(args.api_quotes_run),
-        "api_point": point(args.api_point_run),
+        "api_point": point(args.api_point_run, args.api_quotes_run),
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(output, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
