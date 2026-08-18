@@ -5,6 +5,7 @@ import sys
 import tempfile
 import unittest
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 from unittest import mock
 
@@ -175,6 +176,13 @@ class DurableTestCase(unittest.TestCase):
 
 
 class ManifestAndProviderTests(unittest.TestCase):
+    def test_sonnet5_pricing_stays_at_standard_2_10_after_august(self):
+        pricing = durable.pricing_for("claude-sonnet-5", date(2026, 9, 1))
+        self.assertEqual(pricing.input_per_mtok, 2.0)
+        self.assertEqual(pricing.output_per_mtok, 10.0)
+        self.assertIsNone(pricing.effective_through)
+        self.assertEqual(pricing.source_url, "https://platform.claude.com/docs/en/about-claude/pricing")
+
     def test_confirmation_is_bound_to_exact_input_sha(self):
         with tempfile.TemporaryDirectory() as td:
             run = Path(td)

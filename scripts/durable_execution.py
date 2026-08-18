@@ -65,7 +65,7 @@ class Pricing:
     verified_at: str
 
 
-SONNET_5_SOURCE = "https://platform.claude.com/docs/en/about-claude/models/whats-new-sonnet-5"
+SONNET_5_SOURCE = "https://platform.claude.com/docs/en/about-claude/pricing"
 PROMPT_CACHE_SOURCE = "https://platform.claude.com/docs/en/build-with-claude/prompt-caching"
 
 
@@ -73,9 +73,7 @@ def pricing_for(model: str, on_date: Optional[date] = None) -> Pricing:
     """Return the official direct-API tariff applicable on ``on_date``."""
     on_date = on_date or datetime.now(timezone.utc).date()
     if model == "claude-sonnet-5":
-        if on_date <= date(2026, 8, 31):
-            return Pricing(model, 2.0, 10.0, 2.5, 0.2, "2026-06-30", "2026-08-31", SONNET_5_SOURCE, "2026-08-18")
-        return Pricing(model, 3.0, 15.0, 3.75, 0.3, "2026-09-01", None, SONNET_5_SOURCE, "2026-08-18")
+        return Pricing(model, 2.0, 10.0, 2.5, 0.2, "2026-06-30", None, SONNET_5_SOURCE, "2026-08-19")
     if model == "claude-sonnet-4-6":
         return Pricing(model, 3.0, 15.0, 3.75, 0.3, "2026-01-01", None, PROMPT_CACHE_SOURCE, "2026-08-18")
     raise ValueError(f"No audited pricing contract for model {model!r}")
