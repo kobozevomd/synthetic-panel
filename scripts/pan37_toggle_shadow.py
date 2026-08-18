@@ -88,10 +88,14 @@ def build_shadow_inputs(root: Path, source_manifest: dict, config: dict) -> tupl
 
 
 def original_rows(source_manifest: dict, responses: list[dict]) -> list[dict]:
-    blind_id = source_manifest["controls"]["decoy"]["blind_id"]
+    controls = source_manifest["controls"]
+    blind_id = controls["real_to_blind"][ORIGINAL_ID]
     rows = [row for row in responses if row["stimulus_id"] == blind_id]
     if len(rows) != EXPECTED_CALLS:
         raise RuntimeError(f"expected {EXPECTED_CALLS} original rows, got {len(rows)}")
+    original_text = next(item["text"] for item in source_manifest["stimuli"] if item["id"] == ORIGINAL_ID)
+    if {row["stimulus_text"] for row in rows} != {original_text}:
+        raise RuntimeError("selected source rows are not exact SEMEYNAYA originals")
     return rows
 
 
