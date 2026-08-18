@@ -107,6 +107,7 @@ if str(_SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS_DIR))
 
 import generate  # noqa: E402
+import durable_execution  # noqa: E402
 import report  # noqa: E402
 import ssr_core  # noqa: E402
 
@@ -837,10 +838,7 @@ def load_or_init_manifest(
 
 
 def save_manifest(run_dir: Path, manifest: dict) -> None:
-    manifest_path = run_dir / "manifest.json"
-    with manifest_path.open("w", encoding="utf-8") as f:
-        json.dump(manifest, f, ensure_ascii=False, indent=2)
-        f.write("\n")
+    durable_execution.atomic_write_json(run_dir / "manifest.json", manifest)
 
 
 # ============================================================================
@@ -1230,15 +1228,27 @@ def run_generate_stage(
         )
 
     llm_cfg = config.get("llm", {})
-    manifest.setdefault("stages", {})["generate"] = {
+    generation_stage = {
         "provider": outcome.provider,
         "status": outcome.status,
         "n_tasks": outcome.n_tasks,
         "temperature_control": outcome.temperature_control,
         "model": llm_cfg.get("model") if outcome.provider != "agent" else None,
-        "temperature": llm_cfg.get("temperature") if outcome.provider != "agent" else None,
-        "completed_at": now_iso(),
+        "temperature": (
+            llm_cfg.get("temperature")
+            if outcome.provider != "agent" and outcome.temperature_control
+            else None
+        ),
+        "local_seed_scope": "persona jitter and bootstrap only; not API text determinism",
+        "input_sha256": outcome.input_sha256,
+        "execution": outcome.execution_summary,
+        "updated_at": now_iso(),
     }
+    if outcome.status == "completed":
+        generation_stage["completed_at"] = now_iso()
+    manifest.setdefault("stages", {})["generate"] = generation_stage
+    if outcome.execution_summary is not None:
+        manifest["generation_cost"] = outcome.execution_summary
     return outcome
 
 
@@ -1298,6 +1308,23 @@ def run_score_stage(run_dir: Path, config: dict, anchor_sets: list[dict[int, str
 
     if not rows:
         print(f"ОШИБКА: {responses_path} пуст — нечего скорить.", file=sys.stderr)
+        sys.exit(1)
+
+    gen_stage = (manifest.get("stages") or {}).get("generate") or {}
+    if gen_stage.get("provider") not in (None, "agent") and gen_stage.get("status") != "completed":
+        print(
+            f"ОШИБКА: API-generation status={gen_stage.get('status')!r}, а не 'completed' — "
+            "неполный/карантинный прогон к scoring не допускается.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    expected_rows = gen_stage.get("n_tasks")
+    if expected_rows is not None and len(rows) != int(expected_rows):
+        print(
+            f"ОШИБКА: responses.jsonl содержит {len(rows)} строк при ожидаемых {expected_rows}; "
+            "неполный прогон к scoring не допускается.",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     missing_text = [r.get("rid", "?") for r in rows if not (r.get("text") or "").strip()]
@@ -1894,6 +1921,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "{model, self_reported: true} — это САМОдекларация, а не API-подтверждение; можно "
         "передавать на любой стадии, перезаписывает предыдущее значение этого же прогона.",
     )
+    p.add_argument(
+        "--confirm-input-sha",
+        default=None,
+        help="Подтвердить ровно immutable generation input с этим SHA-256. Первый API generate "
+        "всегда останавливается до платного POST и печатает SHA/смету.",
+    )
     return p
 
 
@@ -1908,6 +1941,8 @@ def main() -> None:
         print(f"ОШИБКА: config.yaml не найден: {config_path}", file=sys.stderr)
         sys.exit(1)
     config = load_yaml(config_path)
+    if args.confirm_input_sha:
+        config.setdefault("_runtime", {})["confirm_input_sha256"] = args.confirm_input_sha
 
     study_path = Path(args.study)
     if not study_path.exists():
@@ -1988,6 +2023,24 @@ def main() -> None:
                 f"--run-dir {run_dir}\n"
             )
             sys.exit(2)
+        if outcome.status == "awaiting_confirmation":
+            estimate = (outcome.execution_summary or {}).get("estimate", {})
+            print(
+                "\n== Платная генерация НЕ запущена: требуется подтверждение immutable input ==\n"
+                f"input_sha256: {outcome.input_sha256}\n"
+                f"calls: {outcome.n_tasks}\n"
+                f"estimated_cost_usd: {estimate.get('estimated_cost_usd')}\n"
+                f"protective_reserve_usd: {estimate.get('protective_reserve_usd')}\n"
+                "Повторите с тем же --run-dir и --confirm-input-sha только после проверки сметы.\n"
+            )
+            sys.exit(4)
+        if outcome.status != "completed":
+            print(
+                f"ОШИБКА: paid generation остановлена со статусом {outcome.status}; "
+                "incomplete responses к scoring не допускаются. См. call_ledger/ и manifest.json.",
+                file=sys.stderr,
+            )
+            sys.exit(5)
         print(f"-- generate: готово ({outcome.n_tasks} ответов, provider={outcome.provider})")
         if args.stage == "generate":
             print(f"\nГотово. Директория прогона: {run_dir}")

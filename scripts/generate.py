@@ -117,6 +117,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+import durable_execution
+
 logger = logging.getLogger(__name__)
 
 
@@ -228,6 +230,18 @@ _GENDER_RU = {
     "муж": "мужчина",
     "женский": "женщина",
     "мужской": "мужчина",
+    # Realty segment_map uses qualitative role notes rather than a binary token.
+    "преимущественно м": "преимущественно мужчина",
+    "преимущественно ж": "преимущественно женщина",
+    "ж на инициативе": "женщина, чаще инициирует поиск",
+    "м на финансах и юридической проверке": "мужчина, чаще отвечает за финансы и юридическую проверку",
+    "преимущественно ж на поиске": "женщина, чаще ведёт поиск",
+    "м на одобрении": "мужчина, чаще подключается на одобрении",
+    "м на профессиональных основаниях": "мужчина, опирается на профессиональные основания",
+    "ж на семейных": "женщина, опирается на семейные основания",
+    "ж на теме среды": "женщина, больше сфокусирована на среде",
+    "м на теме класса и вложений": "мужчина, больше сфокусирован на классе и вложениях",
+    "смешанная часть в сюжетах размена": "мужчина или женщина в сюжете размена",
 }
 
 
@@ -255,6 +269,12 @@ def _translate_jitter_token(token: str, mapping: dict[str, str], field_name: str
 # новую ось) не роняет прогон — _axis_label() гуманизирует его (замена "_" на
 # пробел) и пишет warning в лог, чтобы перевод могли добавить при следующей правке.
 _AXIS_LABEL_RU = {
+    "dlya_zhizni_ili_deneg": "ориентация на инвестицию, а не жизнь",
+    "vneshniy_deadline": "сила внешнего дедлайна покупки",
+    "terpimost_k_nedostroyu": "готовность ждать недострой",
+    "chuvstvitelnost_k_platezhu": "чувствительность к ежемесячному платежу",
+    "vazhnost_sredy_i_sosedey": "важность среды и соседей",
+    "strah_procedury_sdelki": "страх процедуры сделки",
     "coffee_expertise": "экспертность в кофе",
     "coffee_harm_reduction": "восприятие вреда от кофе",
     "dessert_treat": "восприятие кофе как десерта",
@@ -619,6 +639,10 @@ class GenerationResult:
     text: str
     model: str
     request_id: Optional[str] = None
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_creation_input_tokens: int = 0
+    cache_read_input_tokens: int = 0
 
 
 class BaseProvider(ABC):
@@ -658,7 +682,9 @@ class AnthropicProvider(BaseProvider):
             raise ProviderError(
                 "Пакет 'anthropic' не установлен. Установите: pip install anthropic"
             ) from exc
-        self._client = anthropic.Anthropic(api_key=api_key)
+        # All retries belong to durable_execution where every attempt is ledgered.
+        # SDK-level retries would be invisible and can double-pay after ambiguity.
+        self._client = anthropic.Anthropic(api_key=api_key, max_retries=0)
         self.model = model
         self.max_tokens = max_tokens
         self.max_retries = max_retries
@@ -677,31 +703,32 @@ class AnthropicProvider(BaseProvider):
             if image_path
             else user_prompt
         )
-        last_err: Optional[Exception] = None
-        for attempt in range(self.max_retries):
-            try:
-                resp = self._client.messages.create(
-                    model=self.model,
-                    max_tokens=self.max_tokens,
-                    temperature=temperature,
-                    system=system_prompt,
-                    messages=[{"role": "user", "content": content}],
-                )
-                text = "".join(
-                    block.text for block in resp.content if getattr(block, "type", None) == "text"
-                )
-                request_id = getattr(resp, "_request_id", None) or getattr(resp, "id", None)
-                logger.info("anthropic request_id=%s model=%s", request_id, self.model)
-                return GenerationResult(text=text.strip(), model=self.model, request_id=request_id)
-            except Exception as exc:  # ретраим любые транзиентные ошибки SDK
-                last_err = exc
-                wait = min(2**attempt, 20)
-                logger.warning(
-                    "anthropic: попытка %d/%d не удалась (%s), повтор через %ss",
-                    attempt + 1, self.max_retries, exc, wait,
-                )
-                time.sleep(wait)
-        raise ProviderError(f"anthropic: все {self.max_retries} попыток исчерпаны: {last_err}")
+        kwargs = {
+            "model": self.model,
+            "max_tokens": self.max_tokens,
+            "system": system_prompt,
+            "messages": [{"role": "user", "content": content}],
+        }
+        # Sonnet 5 rejects non-default sampling parameters.  Omitting the key is
+        # materially different from sending temperature=0 or 0.85.
+        if self.model != "claude-sonnet-5":
+            kwargs["temperature"] = temperature
+        resp = self._client.messages.create(**kwargs)
+        text = "".join(
+            block.text for block in resp.content if getattr(block, "type", None) == "text"
+        )
+        request_id = getattr(resp, "_request_id", None) or getattr(resp, "id", None)
+        usage = getattr(resp, "usage", None)
+        logger.info("anthropic request_id=%s model=%s", request_id, self.model)
+        return GenerationResult(
+            text=text.strip(),
+            model=self.model,
+            request_id=request_id,
+            input_tokens=int(getattr(usage, "input_tokens", 0) or 0),
+            output_tokens=int(getattr(usage, "output_tokens", 0) or 0),
+            cache_creation_input_tokens=int(getattr(usage, "cache_creation_input_tokens", 0) or 0),
+            cache_read_input_tokens=int(getattr(usage, "cache_read_input_tokens", 0) or 0),
+        )
 
 
 class OpenAIProvider(BaseProvider):
@@ -719,7 +746,7 @@ class OpenAIProvider(BaseProvider):
             raise ProviderError(
                 "Пакет 'openai' не установлен. Установите: pip install openai"
             ) from exc
-        self._client = openai.OpenAI(api_key=api_key)
+        self._client = openai.OpenAI(api_key=api_key, max_retries=0)
         self.model = model
         self.max_tokens = max_tokens
         self.max_retries = max_retries
@@ -1055,12 +1082,14 @@ def write_agent_mode(tasks: list[ResponseTask], run_dir: Path, study_path: str) 
 
 @dataclass
 class GenerateOutcome:
-    status: str  # "todo" | "completed"
+    status: str  # todo|awaiting_confirmation|completed|cancelled|quarantined|failed
     responses_path: Optional[Path]
     todo_path: Optional[Path]
     n_tasks: int
     provider: str
     temperature_control: bool
+    execution_summary: Optional[dict] = None
+    input_sha256: Optional[str] = None
 
 
 def generate_responses(
@@ -1098,18 +1127,70 @@ def generate_responses(
             n_tasks=len(tasks), provider="agent", temperature_control=False,
         )
 
-    provider = get_provider(provider_name, config)
     temperature = float(llm_cfg.get("temperature", 0.85))
-    responses_path = run_dir / "responses.jsonl"
-    with responses_path.open("w", encoding="utf-8") as f:
-        for task in tasks:
-            # §1.3 v1.4: image_path/label — оба None для текстовых стимулов, тогда
-            # build_task_prompt/provider.generate ведут себя байт-в-байт как в v1.3.
-            user_prompt = build_task_prompt(
-                task.stimulus_text, task.question, image_path=task.image_path, label=task.label
-            )
-            result = provider.generate(task.system_prompt, user_prompt, temperature, image_path=task.image_path)
-            row = {
+    model = str(llm_cfg.get("model", "claude-sonnet-5"))
+    max_tokens = int(llm_cfg.get("max_tokens", 300))
+    temperature_in_payload = None if provider_name == "anthropic" and model == "claude-sonnet-5" else temperature
+    budget_cfg = config.get("budget", {})
+    run_cap = float(budget_cfg.get("run_cap_usd", 0))
+    daily_cap = float(budget_cfg.get("daily_cap_usd", 0))
+    if run_cap <= 0 or daily_cap <= 0:
+        raise ProviderError(
+            "Платный API-режим требует положительные budget.run_cap_usd и budget.daily_cap_usd."
+        )
+    pricing = durable_execution.pricing_for(model)
+
+    def prompt_builder(task: ResponseTask) -> str:
+        return build_task_prompt(
+            task.stimulus_text, task.question, image_path=task.image_path, label=task.label
+        )
+
+    proposed = durable_execution.build_input_manifest(
+        tasks=tasks,
+        prompt_builder=prompt_builder,
+        provider_name=provider_name,
+        model=model,
+        max_tokens=max_tokens,
+        temperature=temperature_in_payload,
+        pricing=pricing,
+        run_cap_usd=run_cap,
+        daily_cap_usd=daily_cap,
+        study_snapshot=study,
+        config_snapshot={
+            "llm": {k: v for k, v in llm_cfg.items() if k not in {"api_key"}},
+            "budget": budget_cfg,
+            "report_seed": config.get("report", {}).get("seed", 42),
+        },
+    )
+    input_manifest = durable_execution.ensure_input_manifest(
+        run_dir / durable_execution.INPUT_MANIFEST_NAME, proposed
+    )
+    estimate = input_manifest["estimate"]
+    logger.info(
+        "paid generation preflight input_sha256=%s calls=%d estimate=$%.6f reserve=$%.6f cap=$%.4f",
+        input_manifest["input_sha256"], input_manifest["call_count"],
+        estimate["estimated_cost_usd"], estimate["protective_reserve_usd"], run_cap,
+    )
+    runtime_sha = (config.get("_runtime") or {}).get("confirm_input_sha256")
+    if not durable_execution.is_confirmed(run_dir, input_manifest["input_sha256"], runtime_sha):
+        return GenerateOutcome(
+            status="awaiting_confirmation",
+            responses_path=None,
+            todo_path=None,
+            n_tasks=len(tasks),
+            provider=provider_name,
+            temperature_control=temperature_in_payload is not None,
+            execution_summary={"estimate": estimate, "caps": input_manifest["caps"], "pricing": input_manifest["pricing"]},
+            input_sha256=input_manifest["input_sha256"],
+        )
+
+    provider = get_provider(provider_name, config)
+    # Configured max_tokens is part of the frozen request contract.
+    if hasattr(provider, "max_tokens"):
+        provider.max_tokens = max_tokens
+
+    def row_builder(task: ResponseTask, result: GenerationResult, actual_cost: float) -> dict:
+        return {
                 "rid": task.rid,
                 "segment": task.segment,
                 "persona": task.persona,
@@ -1125,11 +1206,45 @@ def generate_responses(
                 "model": result.model,
                 "request_id": result.request_id,
                 "generated_at": datetime.now(timezone.utc).isoformat(),
+                "usage": {
+                    "input_tokens": result.input_tokens,
+                    "output_tokens": result.output_tokens,
+                    "cache_creation_input_tokens": result.cache_creation_input_tokens,
+                    "cache_read_input_tokens": result.cache_read_input_tokens,
+                },
+                "actual_cost_usd": actual_cost,
             }
-            f.write(json.dumps(row, ensure_ascii=False) + "\n")
-            f.flush()  # инкрементальная запись — прогон переживает обрыв на середине (§ общих правил)
+
+    ledger_path_cfg = os.environ.get("PANEL_DAILY_LEDGER_PATH") or budget_cfg.get("daily_ledger_path")
+    ledger_path = Path(ledger_path_cfg) if ledger_path_cfg else run_dir.parent / ".panel_daily_budget.json"
+    if not ledger_path.is_absolute():
+        ledger_path = run_dir.parent / ledger_path
+    executor = durable_execution.DurableExecutor(
+        run_dir=run_dir,
+        run_id=f"{study.get('name', 'study')}:{input_manifest['input_sha256'][:16]}",
+        input_manifest=input_manifest,
+        provider=provider,
+        pricing=pricing,
+        run_cap_usd=run_cap,
+        daily_budget=durable_execution.DailyBudget(ledger_path, daily_cap),
+        max_attempts=int(budget_cfg.get("max_attempts", 4)),
+        backoff_seconds=float(budget_cfg.get("backoff_seconds", 1)),
+        prompt_builder=prompt_builder,
+        row_builder=row_builder,
+        temperature=temperature,
+    )
+    try:
+        status, responses_path, summary = executor.execute(tasks)
+    except durable_execution.BudgetExceeded as exc:
+        summary = executor.summary()
+        summary["budget_error"] = str(exc)
+        status = "budget_blocked"
+        responses_path = run_dir / "responses.jsonl"
 
     return GenerateOutcome(
-        status="completed", responses_path=responses_path, todo_path=None,
-        n_tasks=len(tasks), provider=provider_name, temperature_control=True,
+        status=status, responses_path=responses_path, todo_path=None,
+        n_tasks=len(tasks), provider=provider_name,
+        temperature_control=temperature_in_payload is not None,
+        execution_summary=summary,
+        input_sha256=input_manifest["input_sha256"],
     )
