@@ -1,0 +1,308 @@
+version: pan37-controls-gate-v3-preregistration-1
+status: frozen_before_implementation
+frozen_at: "2026-08-18T23:40:00+03:00"
+supersedes_for_new_runs: pan37-controls-gate-v2-simulation-contract-v1
+does_not_modify:
+  commit: b14f3a1582c07e075ac6b147bd71324b0e62e6eb
+  contract_path: references/controls_gate_v2_simulation_contract.yaml
+
+scope:
+  api_calls: 0
+  panel_execution_enabled: false
+  old_runs_manifests_reports_are_immutable: true
+  implementation_must_be_a_later_commit: true
+  only_calibratable_design_variable: n_decoy_pairs_per_segment
+  forbidden_post_result_changes:
+    - equivalence_margin_e
+    - pooled_ci_level
+    - pooled_tri_state_rules
+    - guard_mean_threshold_e
+    - familywise_alpha
+    - alpha_method
+    - sd_limit_e
+    - sd_grid
+    - scenario_shifts
+    - acceptance_rate
+    - simulation_counts
+    - bootstrap_iterations
+    - calibration_seed_formula
+    - validation_seed_formula
+
+analysis_design:
+  segment_order:
+    - nam_stalo_tesno
+    - kvartira_rebenku
+    - berut_na_kotlovane
+  k_predeclared_segments: 3
+  analysis_unit: >-
+    One respondent-level paired delta d_i = E_decoy - E_original after all
+    samples of that profile x stimulus have been aggregated by the existing
+    SSR scoring path. Samples and API calls are never treated as independent
+    observations.
+  research_profiles_per_segment: 10
+  n_decoy_pairs_per_segment: 24
+  control_only_profiles_per_segment: 14
+  samples_per_profile_stimulus: 4
+  control_only_stimuli:
+    - original
+    - decoy
+  added_calls_formula: >-
+    (n_decoy_pairs_per_segment - research_profiles_per_segment) * K * 2 *
+    samples_per_profile_stimulus
+  added_calls_for_current_design: 336
+  jitter_indices:
+    research_profiles: [0, 9]
+    control_only_profiles: [10, 23]
+  generation_rule: >-
+    Runner creates the additional profiles automatically. They answer only the
+    original and decoy, never placebo or any other research stimulus.
+  no_leakage_rule: >-
+    Control-only original and decoy responses are excluded from
+    pmf_by_respondent.csv, pmf_by_segment.csv, all main stimulus rankings,
+    pairwise research comparisons, stability metrics, and qualitative research
+    aggregates. They are stored/scored in a controls-only path and may be joined
+    only with the ten research-profile original-decoy pairs for controls gate v3.
+  required_leakage_regression_test: true
+
+decoy_construction:
+  version: period-toggle-v2
+  rule: >-
+    Toggle only the final period: remove it if present, otherwise append it.
+    Do not add guillemets or any other formatting or semantic change.
+  historical_manifests_keep_actual_text: true
+
+primary_pooled_tost:
+  provenance: byte-for-byte algorithmic carry-over from rejected v2 candidate
+  equivalence_margin_e: 0.20
+  ci_level: 0.90
+  profile_bootstrap: stratified_within_predeclared_segment
+  weights: observed_n_segment_divided_by_observed_total_n
+  interval: equal_tailed_percentile
+  rules:
+    fail: pooled_ci_low >= 0.20 OR pooled_ci_high <= -0.20
+    pass: pooled_ci_low > -0.20 AND pooled_ci_high < 0.20
+    inconclusive: otherwise
+  boundary_rule: touching either equivalence boundary is not PASS
+
+segment_guard_v3:
+  guard_mean_threshold_e: 0.20
+  familywise_alpha: 0.05
+  alpha_method: bonferroni_arbitrary_dependence
+  alpha_segment_formula: 0.05 / K
+  alpha_segment_value_for_k3: 0.016666666666666666
+  sidak_rejected_reason: >-
+    Sidak requires independence of segment tests. Profiles do not overlap, but
+    the shared stimulus, model, and generative mechanism do not establish
+    independence of test statistics. Bonferroni controls FWER at 5% under
+    arbitrary dependence and is fixed before implementation or simulation.
+  k_rule: >-
+    K is the full predeclared segment_order length, never the number of segments
+    that happened to score successfully.
+  bootstrap_test:
+    statistic: respondent-level paired mean delta
+    interval: two-sided equal-tailed percentile
+    confidence_level_formula: 1 - alpha_segment
+    reject_zero_iff: ci_low > 0 OR ci_high < 0
+    zero_boundary_rule: a confidence bound equal to zero does not reject
+  segment_fail_iff: >-
+    abs(segment_mean_delta) > 0.20 AND the two-sided bootstrap percentile
+    interval at level 1-alpha_segment excludes zero.
+  mean_boundary_rule: abs(segment_mean_delta) equal to 0.20 does not trigger guard
+
+dispersion_check:
+  statistic: respondent-level sample SD of paired deltas
+  ddof: 1
+  sd_limit_e: 0.40
+  out_of_range_iff: sample_sd > 0.40
+  floating_boundary_tolerance: 1.0e-12
+  reason: дисперсия пары выше проектного диапазона гейта
+
+decoy_verdict_precedence:
+  - >-
+    FAIL if any segment guard triggers, even when that segment SD is above 0.40
+    or the primary pooled result would be PASS/INCONCLUSIVE.
+  - >-
+    If no guard triggers and any segment sample SD is above 0.40, INCONCLUSIVE
+    with controls_failed=true and the fixed dispersion reason.
+  - >-
+    Otherwise use the primary pooled TOST tri-state unchanged.
+  - >-
+    Missing/incomplete paired segment data is INCONCLUSIVE with
+    controls_failed=true; K remains the full predeclared K.
+
+placebo_gate:
+  changed: false
+  beats_real_threshold: 0.7
+  bottom_fraction: 0.3333333333333333
+  rank_rule_min_n: 6
+
+bootstrap_execution:
+  iterations: 2000
+  seed_for_saved_run_rescore: 42
+  resampling: >-
+    Use one numpy default_rng(seed). In segment_order, draw n values with
+    replacement inside each segment for every iteration. Reuse those
+    per-segment bootstrap means for the pooled interval and guard intervals.
+
+manifest_contract:
+  controls_gate_version: 3
+  fields:
+    controls.gate_version: 3
+    controls.n_decoy_pairs.planned_per_segment: 24
+    controls.n_decoy_pairs.actual_by_segment: populated after controls scoring
+    controls.k_predeclared_segments: 3
+    controls.alpha_method: bonferroni_arbitrary_dependence
+    controls.alpha_segment: 0.016666666666666666
+    controls.sd_limit_e: 0.40
+    controls.power_met: populated after controls scoring
+    controls.decoy.construction_version: period-toggle-v2
+    controls_verdict.gate_version: 3
+    controls_verdict.per_segment.sample_sd: required
+    controls_verdict.per_segment.guard_rejects_zero: required
+    controls_verdict.per_segment.guard_fail: required
+    controls_verdict.power_met: required
+  power_met_iff: >-
+    Every predeclared segment has actual n_decoy_pairs >= 24 and sample SD <=
+    0.40. It is informational and does not override the explicit verdict
+    precedence. Historical n=10 rescoring therefore has power_met=false.
+  old_manifest_rule: >-
+    Missing gate_version means v1. Old manifests and reports are never migrated
+    or rewritten. Gate v2 remains only its rejected preregistration/audit record.
+
+simulation:
+  distribution: gaussian_with_exact_observed_sample_sd_and_random_sample_mean
+  data_generation_literal: >-
+    For every simulation x segment draw z_i iid N(0,1). Let zbar be its sample
+    mean and s_z its sample SD with ddof=1. Construct
+    d_i = scenario_shift + grid_sd*zbar + grid_sd*(z_i-zbar)/s_z.
+    Thus the simulated sample mean retains N(scenario_shift, grid_sd/sqrt(n))
+    variation while the respondent-level sample SD is exactly the grid cell SD.
+    Assert absolute computed-SD error <= 1e-12 before scoring. This makes the
+    boundary cell SD=0.40 test the inclusive project boundary rather than a
+    mixture of in-range and out-of-range datasets.
+  sd_grid: [0.10, 0.20, 0.28, 0.35, 0.40]
+  scenario_order:
+    - zero_shift
+    - global_positive
+    - global_negative
+    - single_positive_segment_0
+    - single_positive_segment_1
+    - single_positive_segment_2
+    - single_negative_segment_0
+    - single_negative_segment_1
+    - single_negative_segment_2
+    - compensated_positive_segment_0
+    - compensated_positive_segment_1
+    - compensated_positive_segment_2
+    - compensated_negative_segment_0
+    - compensated_negative_segment_1
+    - compensated_negative_segment_2
+  scenario_shifts:
+    zero_shift: [0.0, 0.0, 0.0]
+    global_positive: [0.35, 0.35, 0.35]
+    global_negative: [-0.35, -0.35, -0.35]
+    single_positive_segment_0: [0.35, 0.0, 0.0]
+    single_positive_segment_1: [0.0, 0.35, 0.0]
+    single_positive_segment_2: [0.0, 0.0, 0.35]
+    single_negative_segment_0: [-0.35, 0.0, 0.0]
+    single_negative_segment_1: [0.0, -0.35, 0.0]
+    single_negative_segment_2: [0.0, 0.0, -0.35]
+    compensated_positive_segment_0: [0.35, -0.175, -0.175]
+    compensated_positive_segment_1: [-0.175, 0.35, -0.175]
+    compensated_positive_segment_2: [-0.175, -0.175, 0.35]
+    compensated_negative_segment_0: [-0.35, 0.175, 0.175]
+    compensated_negative_segment_1: [0.175, -0.35, 0.175]
+    compensated_negative_segment_2: [0.175, 0.175, -0.35]
+  cells_per_phase: 75
+  calibration:
+    simulations_per_cell: 1000
+    bootstrap_iterations_per_simulation: 2000
+    data_seed_formula: 310000 + 100 * sd_grid_index + 2 * scenario_order_index
+    bootstrap_seed_formula: data_seed + 1
+  validation:
+    simulations_per_cell: 2000
+    bootstrap_iterations_per_simulation: 2000
+    current_untouched_seed_bank_index: 0
+    data_seed_formula: >-
+      910000 + 1000000 * validation_seed_bank_index +
+      100 * sd_grid_index + 2 * scenario_order_index
+    bootstrap_seed_formula: data_seed + 1
+    seed_bank_rotation_rule: >-
+      Increment validation_seed_bank_index only after a validation bank has
+      actually been run. A future preregistration after validation failure uses
+      the next mechanically determined untouched bank; this is seed hygiene,
+      not a tunable statistical parameter.
+  seed_indices:
+    sd_grid_index: zero-based position in sd_grid
+    scenario_order_index: zero-based position in scenario_order
+  acceptance_rate: 0.95
+  acceptance_counts:
+    calibration_minimum_successes_of_1000: 950
+    validation_minimum_successes_of_2000: 1900
+  expected_status:
+    zero_shift: PASS
+    all_other_scenarios: FAIL
+  cell_acceptance: >-
+    Every one of the 75 cells must meet its phase minimum for its expected
+    status. Aggregate or average success across cells is forbidden.
+  phase_order:
+    - Run calibration grid only.
+    - >-
+      If any calibration cell misses, do not run validation. Publish failure.
+      Create a new preregistration commit/version changing only
+      n_decoy_pairs_per_segment by the fixed increment.
+    - Run the untouched validation seed bank only after all calibration cells pass.
+    - >-
+      If any validation cell misses, publish failure. Do not change thresholds,
+      delta, alpha, SD grid, scenarios, or counts. Create the next preregistration
+      with larger n only and the next mechanically untouched validation bank.
+  n_change_rule:
+    increment_profiles_per_segment: 4
+    next_n_formula: current_n_decoy_pairs_per_segment + 4
+    requires_new_commit_and_contract_version: true
+    amend_or_force_push_forbidden: true
+
+v1_null_regression:
+  purpose: preserve the measured v1 false-fail behavior as a code regression
+  source_contract_commit: b14f3a1582c07e075ac6b147bd71324b0e62e6eb
+  simulations: 1000
+  bootstrap_iterations: 2000
+  n_profiles_per_segment: 10
+  data_seed: 271828
+  bootstrap_seed: 880001
+  empirical_segment_sds:
+    nam_stalo_tesno: 0.16125449550952378
+    kvartira_rebenku: 0.14178215664701713
+    berut_na_kotlovane: 0.25844614472316185
+  v1_threshold: 0.7
+  expected_exact_counts:
+    per_segment_passes:
+      nam_stalo_tesno: 365
+      kvartira_rebenku: 395
+      berut_na_kotlovane: 361
+    whole_run_strict_three_segment_passes: 51
+  acceptance: exact deterministic count match with the frozen algorithm and seeds
+
+historical_read_only_rescore:
+  api_calls: 0
+  n_decoy_pairs_per_segment: 10
+  power_met: false
+  runs:
+    - agent_2026_08_17_quotes
+    - api_quotes
+    - api_point_toggle
+  required_output:
+    - pooled_mean_delta
+    - pooled_90_percent_ci
+    - per_segment_mean_delta
+    - per_segment_guard_ci
+    - per_segment_guard_rejects_zero
+    - per_segment_guard_fail
+    - per_segment_sample_sd_ddof1
+    - verdict_v3
+    - reason
+    - power_met
+  independent_second_implementation: required
+  outputs_are_separate_diagnostic_artifacts: true
+  source_hashes_before_after_must_match: true
+  report_rerender_or_rerelease_before_user_review: forbidden
